@@ -69,6 +69,11 @@ var migrations = []migration{
 			role           TEXT NOT NULL DEFAULT 'worker',
 			persona        TEXT NOT NULL DEFAULT '',
 			email          TEXT,
+			employed       INTEGER NOT NULL DEFAULT 0,
+			harness        TEXT NOT NULL DEFAULT 'claude',
+			model          TEXT NOT NULL DEFAULT 'opus',
+			acp_url        TEXT NOT NULL DEFAULT '',
+			acp_provider   TEXT NOT NULL DEFAULT '',
 			created_at     TEXT DEFAULT (datetime('now')),
 			last_connected TEXT
 		);
@@ -115,14 +120,15 @@ var migrations = []migration{
 			PRIMARY KEY (task_id, employee_id)
 		);
 		CREATE TABLE IF NOT EXISTS workers (
-			id             INTEGER PRIMARY KEY AUTOINCREMENT,
-			employee_id    INTEGER NOT NULL REFERENCES employees(id),
-			pid            INTEGER,
-			status         TEXT NOT NULL DEFAULT 'idle',
-			session_id     TEXT,
-			log_path       TEXT,
-			created_at     TEXT DEFAULT (datetime('now')),
-			last_connected TEXT
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			employee_id     INTEGER NOT NULL REFERENCES employees(id),
+			pid             INTEGER,
+			status          TEXT NOT NULL DEFAULT 'idle',
+			session_id      TEXT,
+			log_path        TEXT,
+			transcript_path TEXT,
+			created_at      TEXT DEFAULT (datetime('now')),
+			last_connected  TEXT
 		);
 		CREATE TABLE IF NOT EXISTS read_cursors (
 			employee_id  INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -136,29 +142,25 @@ var migrations = []migration{
 			path       TEXT NOT NULL,
 			created_at TEXT DEFAULT (datetime('now'))
 		);
+		CREATE TABLE IF NOT EXISTS settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS reviews (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			worker_nick  TEXT NOT NULL,
+			title        TEXT NOT NULL,
+			description  TEXT NOT NULL DEFAULT '',
+			type         TEXT NOT NULL DEFAULT 'choice',
+			body         TEXT NOT NULL DEFAULT '{}',
+			status       TEXT NOT NULL DEFAULT 'pending',
+			response     TEXT,
+			created_at   TEXT DEFAULT (datetime('now')),
+			responded_at TEXT
+		);
 		INSERT OR IGNORE INTO channels (name, topic) VALUES ('general', 'General discussion');
 	`},
-	{2, `ALTER TABLE workers ADD COLUMN log_path TEXT;`},
-	{3, `ALTER TABLE workers ADD COLUMN transcript_path TEXT;`},
-	{4, `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`},
-	{5, `CREATE TABLE IF NOT EXISTS reviews (
-		id           INTEGER PRIMARY KEY AUTOINCREMENT,
-		worker_nick  TEXT NOT NULL,
-		title        TEXT NOT NULL,
-		description  TEXT NOT NULL DEFAULT '',
-		type         TEXT NOT NULL DEFAULT 'choice',
-		body         TEXT NOT NULL DEFAULT '{}',
-		status       TEXT NOT NULL DEFAULT 'pending',
-		response     TEXT,
-		created_at   TEXT DEFAULT (datetime('now')),
-		responded_at TEXT
-	);`},
-	{6, `ALTER TABLE employees ADD COLUMN employed INTEGER NOT NULL DEFAULT 0;`},
-	{7, `ALTER TABLE employees ADD COLUMN harness TEXT NOT NULL DEFAULT 'claude'`},
-	{8, `ALTER TABLE employees ADD COLUMN model TEXT NOT NULL DEFAULT 'opus'`},
-	{9, `ALTER TABLE employees ADD COLUMN acp_url TEXT NOT NULL DEFAULT ''`},
-	{10, `ALTER TABLE employees ADD COLUMN acp_provider TEXT NOT NULL DEFAULT ''`},
-	// -- future migrations go here as {11, `...`}, etc.
+	// -- future migrations go here as {2, `...`}, etc.
 }
 
 func now() string { return time.Now().UTC().Format(time.DateTime) }
