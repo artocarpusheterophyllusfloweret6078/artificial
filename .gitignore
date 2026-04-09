@@ -1,5 +1,6 @@
 bin/
 worker
+!src/cmd-worker/cmd/worker/
 *.db
 *.db-wal
 *.db-shm
