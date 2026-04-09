@@ -112,9 +112,12 @@ func (c *Client) readLoop(ctx context.Context) {
 			}
 		}
 
-		// Otherwise, pass to handler.
+		// Otherwise, pass to handler in a goroutine so slow handlers
+		// (e.g. PushChannelNotification writing to the MCP transport)
+		// cannot block the read loop and delay delivery of responses
+		// to pending Request() calls.
 		if c.handler != nil {
-			c.handler(msg)
+			go c.handler(msg)
 		}
 	}
 }

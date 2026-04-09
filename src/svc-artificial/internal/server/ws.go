@@ -958,12 +958,19 @@ func (h *Hub) broadcast(msg protocol.WSMessage, skipNick string) {
 	if err != nil {
 		return
 	}
+	// Snapshot clients under the lock, then write outside of it — holding
+	// h.mu during a blocking network write lets one slow client stall the
+	// whole hub and can deadlock against connect/disconnect (which take Lock).
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	targets := make([]*client, 0, len(h.clients))
 	for nick, c := range h.clients {
 		if nick == skipNick {
 			continue
 		}
+		targets = append(targets, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range targets {
 		c.conn.Write(context.Background(), websocket.MessageText, data)
 	}
 }
@@ -988,7 +995,7 @@ func (h *Hub) broadcastToTaskSubscribers(taskID int64, msg protocol.WSMessage, s
 		return
 	}
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	targets := make([]*client, 0, len(h.clients))
 	for nick, c := range h.clients {
 		if nick == skipNick {
 			continue
@@ -996,6 +1003,10 @@ func (h *Hub) broadcastToTaskSubscribers(taskID int64, msg protocol.WSMessage, s
 		if !memberSet[nick] {
 			continue
 		}
+		targets = append(targets, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range targets {
 		c.conn.Write(context.Background(), websocket.MessageText, data)
 	}
 }
@@ -1020,7 +1031,7 @@ func (h *Hub) broadcastToChannel(channel string, msg protocol.WSMessage, skipNic
 		return
 	}
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	targets := make([]*client, 0, len(h.clients))
 	for nick, c := range h.clients {
 		if nick == skipNick {
 			continue
@@ -1028,6 +1039,10 @@ func (h *Hub) broadcastToChannel(channel string, msg protocol.WSMessage, skipNic
 		if !memberSet[nick] {
 			continue
 		}
+		targets = append(targets, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range targets {
 		c.conn.Write(context.Background(), websocket.MessageText, data)
 	}
 }
