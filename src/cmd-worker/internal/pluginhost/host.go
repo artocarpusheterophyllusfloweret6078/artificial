@@ -47,14 +47,20 @@ import (
 // Host owns the set of currently-loaded plugins for one worker.
 //
 // Concurrency: every public method is safe to call from multiple
-// goroutines. The mutex is a standard rwmutex — reads (Tools, Execute,
-// State) are frequent, writes (LoadAll, Shutdown) are rare.
+// goroutines. The rwmutex (mu) guards the plugins + errors maps —
+// readers (Tools, Execute, State) take RLock, the LoadAll write path
+// takes Lock around the edits only. A separate mutex (loadMu) serialises
+// the full LoadAll call so two concurrent reloads cannot compute the
+// same toLaunch set and spawn duplicate subprocesses across the
+// unlocked spawn window.
 type Host struct {
 	serverURL string
 
-	mu       sync.RWMutex
-	plugins  map[string]*LoadedPlugin // name → plugin
-	errors   map[string]string         // name → load error message for disabled rows
+	loadMu sync.Mutex // serialises LoadAll calls end-to-end
+
+	mu      sync.RWMutex
+	plugins map[string]*LoadedPlugin // name → plugin
+	errors  map[string]string         // name → load error message for disabled rows
 }
 
 // LoadedPlugin is one plugin that is currently running in a subprocess.
@@ -98,6 +104,13 @@ func New(serverURL string) *Host {
 // the handshake + RPC dial, and LoadAll is called from the hub
 // readLoop path which must not block the hub.
 func (h *Host) LoadAll(ctx context.Context) error {
+	// Serialise the whole LoadAll call. Two concurrent MsgPluginChanged
+	// broadcasts arriving while a LoadAll is mid-spawn would otherwise
+	// compute the same toLaunch set and race on the commit
+	// — one subprocess would leak on the overwrite.
+	h.loadMu.Lock()
+	defer h.loadMu.Unlock()
+
 	plugins, err := h.fetchPluginList(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch plugin list: %w", err)
