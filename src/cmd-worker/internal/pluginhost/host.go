@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sync"
+	"time"
 
 	"artificial.pt/pkg-go-shared/plugin"
 	"artificial.pt/pkg-go-shared/protocol"
@@ -90,6 +91,12 @@ func New(serverURL string) *Host {
 // caller needs to know). Errors during individual plugin launches are
 // logged and recorded in the errors map — one broken plugin does not
 // block the others from loading.
+//
+// Locking: the write lock is released around the subprocess spawn so
+// concurrent Tools/State/Execute callers don't stall behind a slow
+// plugin launch. A spawn can take a second or two as go-plugin does
+// the handshake + RPC dial, and LoadAll is called from the hub
+// readLoop path which must not block the hub.
 func (h *Host) LoadAll(ctx context.Context) error {
 	plugins, err := h.fetchPluginList(ctx)
 	if err != nil {
@@ -103,10 +110,9 @@ func (h *Host) LoadAll(ctx context.Context) error {
 		}
 	}
 
+	// Under lock: stop plugins we no longer want and compute
+	// the set of plugins still missing from the registry.
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// Stop plugins that are no longer wanted.
 	for name, loaded := range h.plugins {
 		if _, keep := want[name]; !keep {
 			slog.Info("pluginhost: stopping plugin", "name", name)
@@ -114,24 +120,48 @@ func (h *Host) LoadAll(ctx context.Context) error {
 				loaded.client.Kill()
 			}
 			delete(h.plugins, name)
+			// Clear any stale error record from a previous failed load
+			// — a plugin that has been disabled should not keep
+			// showing status=error on the dashboard forever.
+			delete(h.errors, name)
 		}
 	}
-
-	// Launch plugins that are newly wanted. Individual failures are
-	// non-fatal — record the error and keep going.
+	var toLaunch []protocol.Plugin
 	for name, p := range want {
 		if _, already := h.plugins[name]; already {
 			continue
 		}
+		toLaunch = append(toLaunch, p)
+	}
+	h.mu.Unlock()
+
+	// Unlocked: launch newly-wanted plugins. Readers
+	// (Tools/State/Execute) can proceed concurrently. Launch failures
+	// are non-fatal — a broken plugin is recorded and the others still
+	// load.
+	launched := make(map[string]*LoadedPlugin, len(toLaunch))
+	launchErrors := make(map[string]string, len(toLaunch))
+	for _, p := range toLaunch {
 		loaded, err := h.launch(p)
 		if err != nil {
-			slog.Error("pluginhost: launch failed", "name", name, "err", err)
-			h.errors[name] = err.Error()
+			slog.Error("pluginhost: launch failed", "name", p.Name, "err", err)
+			launchErrors[p.Name] = err.Error()
 			continue
 		}
+		launched[p.Name] = loaded
+		slog.Info("pluginhost: plugin loaded", "name", p.Name, "tools", toolNames(loaded.Tools))
+	}
+
+	// Under lock: commit the launched plugins into the
+	// registry and update error bookkeeping atomically.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for name, loaded := range launched {
 		h.plugins[name] = loaded
 		delete(h.errors, name)
-		slog.Info("pluginhost: plugin loaded", "name", name, "tools", toolNames(loaded.Tools))
+	}
+	for name, msg := range launchErrors {
+		h.errors[name] = msg
 	}
 	return nil
 }
@@ -139,7 +169,7 @@ func (h *Host) LoadAll(ctx context.Context) error {
 // launch spawns a single plugin subprocess via hashicorp/go-plugin and
 // captures the ArtificialPlugin handle + the descriptor list.
 //
-// The caller must hold h.mu.
+// Caller must NOT hold h.mu — this call blocks on subprocess spawn.
 func (h *Host) launch(p protocol.Plugin) (*LoadedPlugin, error) {
 	client := goplugin.NewClient(&goplugin.ClientConfig{
 		HandshakeConfig: plugin.Handshake,
@@ -185,17 +215,20 @@ func (h *Host) launch(p protocol.Plugin) (*LoadedPlugin, error) {
 	}, nil
 }
 
-// fetchPluginList does one GET /api/plugins round-trip. Kept as a
-// method so tests can swap the transport via a subclass / interface if
-// they care — today there are no tests against this path, the worker
-// integration test exercises it end-to-end.
+// fetchHTTPClient is used by fetchPluginList. Has an explicit timeout
+// so a hung svc-artificial cannot wedge a worker indefinitely, even if
+// a caller passes ctx.Background() — the timeout is belt+braces on top
+// of the ctx deadline LoadAll already respects.
+var fetchHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+// fetchPluginList does one GET /api/plugins round-trip.
 func (h *Host) fetchPluginList(ctx context.Context) ([]protocol.Plugin, error) {
 	url := fmt.Sprintf("http://%s/api/plugins", h.serverURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fetchHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
