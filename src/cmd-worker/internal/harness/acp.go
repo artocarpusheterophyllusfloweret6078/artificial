@@ -190,9 +190,7 @@ func (a *ACP) Start() error {
 	if a.hubClient != nil {
 		instructions := buildMCPInstructions(a.cfg.Nickname)
 		a.mcpSrv = mcpserver.New(a.cfg.Nickname, a.cfg.Role, a.cfg.ProjectID, a.hubClient, instructions)
-		if a.cfg.PluginHost != nil {
-			a.mcpSrv.RegisterPluginTools(a.cfg.PluginHost.Tools())
-		}
+		a.mcpSrv.RegisterPluginTools(combinedPluginTools(a.cfg))
 		port, err := a.mcpSrv.Start() // StreamableHTTP
 		if err != nil {
 			return fmt.Errorf("start mcp server: %w", err)
@@ -444,15 +442,12 @@ func (a *ACP) Stop() {
 
 // ReloadPluginTools re-grafts plugin-contributed tools onto the live
 // MCP server after a pluginhost reload. See the Claude implementation
-// for the rationale — without this, the handler closures captured at
-// Start time point at RPC clients that LoadAll has since killed, and
-// every subsequent tool call from the agent fails with "connection is
-// shut down".
+// for the rationale.
 func (a *ACP) ReloadPluginTools() {
-	if a.mcpSrv == nil || a.cfg.PluginHost == nil {
+	if a.mcpSrv == nil {
 		return
 	}
-	a.mcpSrv.RegisterPluginTools(a.cfg.PluginHost.Tools())
+	a.mcpSrv.RegisterPluginTools(combinedPluginTools(a.cfg))
 }
 
 // ── .cursor/mcp.json management ─────────────────────────────────────────

@@ -2,7 +2,10 @@
 // and provides a factory to create the correct harness based on employee config.
 package harness
 
-import "artificial.pt/cmd-worker/internal/pluginhost"
+import (
+	"artificial.pt/cmd-worker/internal/hub"
+	"artificial.pt/pkg-go-shared/pluginhost"
+)
 
 // Harness abstracts agent process lifecycle. Each agent type (claude, acp)
 // implements this interface to provide a uniform way to start agents, push
@@ -72,8 +75,17 @@ type Config struct {
 	ACPProvider string // ACP provider to auto-spawn: "opencode", etc.
 	Model       string
 
-	// PluginHost, if non-nil, is the pluginhost the harness should query
-	// for plugin-contributed tools immediately after constructing its
-	// mcpserver. Populated by cmd/worker/main.go after LoadAll succeeds.
+	// PluginHost, if non-nil, is the worker-scope pluginhost the
+	// harness should query for plugin-contributed tools immediately
+	// after constructing its mcpserver. Populated by cmd/worker/main.go
+	// after the first Reconcile succeeds.
 	PluginHost *pluginhost.Host
+
+	// HubClient, if non-nil, is the live hub connection the harness
+	// uses to fetch host-scope tool descriptors from svc-artificial
+	// via MsgHostToolList, and to forward tool-call RPCs via
+	// MsgCallTool. Leaving it nil disables host-scope plugin forwarding
+	// — the harness will only see worker-scope plugins, which is the
+	// right fallback for tests and local smoke runs.
+	HubClient *hub.Client
 }

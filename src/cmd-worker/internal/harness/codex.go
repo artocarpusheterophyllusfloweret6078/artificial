@@ -54,9 +54,7 @@ func (c *Codex) Start() error {
 	// Start MCP server for tools
 	instructions := buildCodexMCPInstructions(c.cfg.Nickname)
 	c.mcpSrv = mcpserver.New(c.cfg.Nickname, c.cfg.Role, c.cfg.ProjectID, c.hubClient, instructions)
-	if c.cfg.PluginHost != nil {
-		c.mcpSrv.RegisterPluginTools(c.cfg.PluginHost.Tools())
-	}
+	c.mcpSrv.RegisterPluginTools(combinedPluginTools(c.cfg))
 	mcpPort, err := c.mcpSrv.Start()
 	if err != nil {
 		return err
@@ -225,15 +223,12 @@ func (c *Codex) Stop() {
 
 // ReloadPluginTools re-grafts plugin-contributed tools onto the live
 // MCP server after a pluginhost reload. See the Claude implementation
-// for the rationale — without this, the handler closures captured at
-// Start time point at RPC clients that LoadAll has since killed, and
-// every subsequent tool call from the agent fails with "connection is
-// shut down".
+// for the rationale.
 func (c *Codex) ReloadPluginTools() {
-	if c.mcpSrv == nil || c.cfg.PluginHost == nil {
+	if c.mcpSrv == nil {
 		return
 	}
-	c.mcpSrv.RegisterPluginTools(c.cfg.PluginHost.Tools())
+	c.mcpSrv.RegisterPluginTools(combinedPluginTools(c.cfg))
 }
 
 // LogID returns the log file identifier.
