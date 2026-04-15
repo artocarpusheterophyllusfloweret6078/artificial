@@ -87,6 +87,22 @@ func (c *Claude) PushNotification(content string, meta map[string]string) {
 	}
 }
 
+// ReloadPluginTools re-grafts plugin-contributed tools onto the live
+// MCP server after a pluginhost reload. The MCP SDK's AddTool is
+// last-write-wins by name, so calling RegisterPluginTools with the new
+// host.Tools() snapshot replaces every still-present tool handler with a
+// fresh closure that routes through the *new* plugin subprocess — the
+// previous closures were holding an already-killed go-plugin RPC client
+// and would return "connection is shut down" on the next Execute. See
+// handleHubMessage(MsgPluginChanged) in cmd/worker/main.go for the call
+// site.
+func (c *Claude) ReloadPluginTools() {
+	if c.mcpSrv == nil || c.cfg.PluginHost == nil {
+		return
+	}
+	c.mcpSrv.RegisterPluginTools(c.cfg.PluginHost.Tools())
+}
+
 // Wait blocks until Claude exits and returns the result.
 func (c *Claude) Wait() Result {
 	if c.proc == nil {

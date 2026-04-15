@@ -223,6 +223,19 @@ func (c *Codex) Stop() {
 	}
 }
 
+// ReloadPluginTools re-grafts plugin-contributed tools onto the live
+// MCP server after a pluginhost reload. See the Claude implementation
+// for the rationale — without this, the handler closures captured at
+// Start time point at RPC clients that LoadAll has since killed, and
+// every subsequent tool call from the agent fails with "connection is
+// shut down".
+func (c *Codex) ReloadPluginTools() {
+	if c.mcpSrv == nil || c.cfg.PluginHost == nil {
+		return
+	}
+	c.mcpSrv.RegisterPluginTools(c.cfg.PluginHost.Tools())
+}
+
 // LogID returns the log file identifier.
 func (c *Codex) LogID() string { return c.logID }
 

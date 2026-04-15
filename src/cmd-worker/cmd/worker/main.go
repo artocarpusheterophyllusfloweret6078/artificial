@@ -228,6 +228,19 @@ func handleHubMessage(msg protocol.WSMessage, myNick string, h harness.Harness, 
 		if err := host.LoadAll(context.Background()); err != nil {
 			slog.Error("pluginhost: reload failed", "err", err)
 		}
+		// Re-graft the post-reload tool set onto the live MCP server.
+		// LoadAll has just killed the previous plugin subprocesses and
+		// relaunched any still-enabled ones, so the tool handler
+		// closures captured at harness Start time are pointing at
+		// go-plugin RPC clients that no longer exist. Without this
+		// call every subsequent tool call via the MCP session returns
+		// "connection is shut down". The harness may be nil if reload
+		// fires during startup before the harness is constructed, in
+		// which case the next Start call will register fresh closures
+		// anyway.
+		if h != nil {
+			h.ReloadPluginTools()
+		}
 		sendPluginState(hc, host)
 		return
 	}

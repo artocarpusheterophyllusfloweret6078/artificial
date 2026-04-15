@@ -442,6 +442,19 @@ func (a *ACP) Stop() {
 	}
 }
 
+// ReloadPluginTools re-grafts plugin-contributed tools onto the live
+// MCP server after a pluginhost reload. See the Claude implementation
+// for the rationale — without this, the handler closures captured at
+// Start time point at RPC clients that LoadAll has since killed, and
+// every subsequent tool call from the agent fails with "connection is
+// shut down".
+func (a *ACP) ReloadPluginTools() {
+	if a.mcpSrv == nil || a.cfg.PluginHost == nil {
+		return
+	}
+	a.mcpSrv.RegisterPluginTools(a.cfg.PluginHost.Tools())
+}
+
 // ── .cursor/mcp.json management ─────────────────────────────────────────
 
 func (a *ACP) writeCursorMCPConfig() {

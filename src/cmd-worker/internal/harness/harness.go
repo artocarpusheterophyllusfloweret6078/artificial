@@ -18,6 +18,15 @@ type Harness interface {
 	// this creates a new run in the same session.
 	PushNotification(content string, meta map[string]string)
 
+	// ReloadPluginTools re-registers the harness's MCP server tools from
+	// the current pluginhost snapshot. Called after pluginhost.LoadAll has
+	// reconciled subprocesses (e.g. in response to a dashboard Reload or
+	// Enable/Disable click) so the MCP tool handlers are re-bound to the
+	// fresh RPC clients instead of the subprocesses that LoadAll just
+	// killed. No-op if the harness hasn't started its mcpserver yet or
+	// was constructed without a PluginHost.
+	ReloadPluginTools()
+
 	// Wait blocks until the agent process exits and returns the result.
 	Wait() Result
 
