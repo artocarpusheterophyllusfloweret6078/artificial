@@ -86,9 +86,14 @@ main { flex: 1; display: flex; overflow: hidden; }
 .project-card .project-tasks { padding: 8px; flex: 1; display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
 .project-card .project-footer { padding: 6px 12px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text3); display: flex; justify-content: space-between; align-items: center; }
 .project-card .project-footer .btn { font-size: 10px; padding: 2px 8px; }
+.project-agents { padding: 6px 8px; border-top: 1px solid var(--bg3); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.project-agent-tag { font-size: 9px; padding: 1px 6px; border-radius: 3px; background: rgba(88,166,255,0.1); color: var(--accent); display: inline-flex; align-items: center; gap: 4px; }
+.project-agent-tag button { border: 0; background: transparent; color: var(--text3); cursor: pointer; font-size: 10px; padding: 0; }
+.project-agent-tag button:hover { color: var(--red); }
 
 /* Team view */
 .emp-card { width: 340px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; }
+.emp-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(88,166,255,0.35); }
 .emp-card .emp-header { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
 .emp-card .emp-header .emp-id { font-size: 10px; color: var(--text3); background: var(--bg3); padding: 1px 6px; border-radius: 4px; }
 .emp-card .emp-header .emp-nick { font-size: 13px; font-weight: 600; }
@@ -111,6 +116,16 @@ main { flex: 1; display: flex; overflow: hidden; }
 .emp-config select { width: 80px; }
 .emp-config input { width: 70px; }
 .emp-config label { font-size: 9px; color: var(--text3); }
+.team-select { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; flex: 0 0 auto; }
+.team-select:disabled { cursor: not-allowed; opacity: 0.35; }
+.team-bulk-bar { width: 100%; min-height: 42px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 10px; font-size: 11px; }
+.team-bulk-bar .team-bulk-field { display: flex; align-items: center; gap: 4px; }
+.team-bulk-bar label { font-size: 10px; color: var(--text3); }
+.team-bulk-bar select, .team-bulk-bar input { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 11px; padding: 3px 6px; }
+.team-bulk-bar select { width: 92px; }
+.team-bulk-bar input { width: 130px; }
+.team-bulk-count { color: var(--text2); min-width: 72px; }
+.team-bulk-status { color: var(--text3); flex: 1 1 220px; min-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Reviews */
 .review-card { width: 400px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; }
@@ -427,6 +442,10 @@ let ws = null;
 let currentChannel = 'general';
 let channels = [];
 let members = [];
+let selectedTeamEmployeeIds = new Set();
+let teamBulkDraft = { harness: '', model: '', acp_provider: 'opencode', acp_url: '' };
+let teamBulkStatus = { text: '', error: false };
+let teamAssignProjectId = '';
 let tasks = [];
 let unread = {};
 let activeRunners = []; // flat list of all non-terminal runners
@@ -1285,6 +1304,7 @@ function appendMessage(m) {
 }
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function escAttr(s) { return escHtml(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
 function renderMd(text) {
   let s = escHtml(text);
@@ -1327,7 +1347,7 @@ function switchView(view) {
   });
   if (view === 'board') loadTasks();
   if (view === 'projects') { loadProjects(); loadTasks(); }
-  if (view === 'team') loadMembers();
+  if (view === 'team') { loadProjects(); loadMembers(); }
   if (view === 'workers') loadWorkers();
   if (view === 'reviews') loadReviews();
   if (view === 'plugins') loadPlugins();
@@ -1335,6 +1355,7 @@ function switchView(view) {
 }
 
 let projects = [];
+let projectAgents = {};
 
 function renderProjects() {
   const el = document.getElementById('projectsView');
@@ -1344,6 +1365,8 @@ function renderProjects() {
   }
   el.innerHTML = projects.map(p => {
     const projTasks = (tasks || []).filter(t => t.project_id === p.id);
+    const assigned = Array.isArray(projectAgents[p.id]) ? projectAgents[p.id] : [];
+    const assignedCount = assigned.length || p.assigned_agent_count || 0;
     const byStatus = s => projTasks.filter(t => t.status === s);
     const counts = ['backlog','todo','in_progress','in_qa','done'].map(s => {
       const c = byStatus(s).length;
@@ -1357,6 +1380,10 @@ function renderProjects() {
     }).join('');
 
     const more = projTasks.length > 10 ? `<div style="font-size:10px;color:var(--text3);padding:4px">+${projTasks.length - 10} more</div>` : '';
+    const agentTags = assigned.length
+      ? assigned.map(a => `<span class="project-agent-tag">${escHtml(a.nickname)}<button title="Remove from project" onclick="removeProjectAgent(${p.id}, ${a.id})">×</button></span>`).join('')
+      : '<span style="font-size:10px;color:var(--text3)">No assigned agents</span>';
+    const footerCounts = `${counts || 'No tasks'} · ${assignedCount} assigned agent${assignedCount === 1 ? '' : 's'}`;
 
     return `<div class="project-card">
       <div class="project-header">
@@ -1365,7 +1392,14 @@ function renderProjects() {
         ${p.git_remote ? `<div class="remote">${escHtml(p.git_remote)}</div>` : ''}
       </div>
       <div class="project-tasks">${taskCards || '<div style="font-size:10px;color:var(--text3)">No tasks</div>'}${more}</div>
-      <div class="project-footer"><span>${counts || 'No tasks'}</span><button class="btn" onclick="deleteProject(${p.id})">Delete</button></div>
+      <div class="project-agents">${agentTags}</div>
+      <div class="project-footer">
+        <span>${footerCounts}</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn" onclick="spawnProjectAgents(${p.id})" ${assignedCount ? '' : 'disabled'}>Spawn assigned</button>
+          <button class="btn" onclick="deleteProject(${p.id})">Delete</button>
+        </div>
+      </div>
     </div>`;
   }).join('');
 }
@@ -1373,6 +1407,29 @@ function renderProjects() {
 async function deleteProject(id) {
   if (!confirm('Delete this project? Tasks will keep their project_id but the project will be gone.')) return;
   await fetch('/api/projects/' + id, { method: 'DELETE' });
+  loadProjects();
+}
+
+async function removeProjectAgent(projectId, employeeId) {
+  await fetch(`/api/projects/${projectId}/agents/${employeeId}`, { method: 'DELETE' });
+  loadProjects();
+}
+
+async function spawnProjectAgents(projectId) {
+  const res = await fetch(`/api/projects/${projectId}/spawn-assigned`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    alert(data.error || 'Failed to spawn assigned agents');
+    return;
+  }
+  const failures = (data.results || []).filter(r => r.status === 'failed');
+  const skipped = (data.results || []).filter(r => r.status === 'skipped');
+  let msg = data.message || 'Spawn request completed.';
+  if (data.spawned?.length) msg += ': ' + data.spawned.join(', ');
+  if (failures.length) msg += `\nFailed: ${failures.map(r => `${r.employee}: ${r.error}`).join('; ')}`;
+  if (skipped.length) msg += `\nSkipped: ${skipped.map(r => `${r.employee}: ${r.message}`).join('; ')}`;
+  alert(msg);
+  loadWorkers();
   loadProjects();
 }
 
@@ -1505,9 +1562,20 @@ async function loadProjects() {
   const res = await fetch('/api/projects');
   const data = await res.json();
   projects = Array.isArray(data) ? data : [];
+  projectAgents = {};
+  await Promise.all(projects.map(async p => {
+    try {
+      const agentRes = await fetch('/api/projects/' + p.id + '/agents');
+      if (agentRes.ok) projectAgents[p.id] = await agentRes.json();
+      if (!Array.isArray(projectAgents[p.id])) projectAgents[p.id] = [];
+    } catch (e) {
+      projectAgents[p.id] = [];
+    }
+  }));
   const sel = document.getElementById('taskProject');
   sel.innerHTML = '<option value="">None</option>' + projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   renderProjects();
+  if (document.getElementById('teamView')?.classList.contains('active')) renderTeam();
 }
 
 // ── Plugins View ──
@@ -1624,16 +1692,114 @@ async function deletePlugin(id) {
 
 // ── Team View ──
 
+function isSelectableTeamAgent(m) {
+  return !!m && m.role === 'worker';
+}
+
+function normalizeTeamSelection() {
+  const selectable = new Set(members.filter(isSelectableTeamAgent).map(m => m.id));
+  selectedTeamEmployeeIds = new Set([...selectedTeamEmployeeIds].filter(id => selectable.has(id)));
+}
+
+function updateTeamBulkDraftFromInputs() {
+  const harness = document.getElementById('bulkHarness');
+  const model = document.getElementById('bulkModel');
+  const provider = document.getElementById('bulkAcpProvider');
+  const url = document.getElementById('bulkAcpUrl');
+  if (harness) teamBulkDraft.harness = harness.value;
+  if (model) teamBulkDraft.model = model.value;
+  if (provider) teamBulkDraft.acp_provider = provider.value;
+  if (url) teamBulkDraft.acp_url = url.value;
+}
+
+function selectedTeamAgents() {
+  normalizeTeamSelection();
+  return members.filter(m => selectedTeamEmployeeIds.has(m.id) && isSelectableTeamAgent(m));
+}
+
+function setTeamBulkStatus(text, error = false) {
+  teamBulkStatus = { text, error };
+  const el = document.getElementById('teamBulkStatus');
+  if (el) {
+    el.textContent = text;
+    el.style.color = error ? 'var(--red)' : 'var(--text3)';
+  }
+}
+
+function renderTeamBulkToolbar(selectableAgents) {
+  const selectedCount = selectedTeamEmployeeIds.size;
+  const allSelected = selectableAgents.length > 0 && selectableAgents.every(m => selectedTeamEmployeeIds.has(m.id));
+  if (projects.length && !projects.some(p => String(p.id) === String(teamAssignProjectId))) teamAssignProjectId = String(projects[0].id);
+  if (!projects.length) teamAssignProjectId = '';
+  const projectOptions = projects.length
+    ? projects.map(p => `<option value="${p.id}"${String(p.id) === String(teamAssignProjectId) ? ' selected' : ''}>${escHtml(p.name)}</option>`).join('')
+    : '<option value="">No projects</option>';
+  const modelOptions = [...new Set(members.map(m => (m.model || '').trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b))
+    .map(m => `<option value="${escAttr(m)}"></option>`)
+    .join('');
+  const acpStyle = teamBulkDraft.harness === 'acp' ? '' : 'display:none';
+  const statusColor = teamBulkStatus.error ? 'var(--red)' : 'var(--text3)';
+  return `<div class="team-bulk-bar">
+    <div class="team-bulk-field">
+      <input class="team-select" type="checkbox" title="Select all worker agents" onchange="toggleAllTeamSelection(this.checked)" ${allSelected ? 'checked' : ''} ${selectableAgents.length ? '' : 'disabled'}>
+      <span class="team-bulk-count">${selectedCount} selected</span>
+    </div>
+    <div class="team-bulk-field">
+      <label for="teamAssignProject">Project</label>
+      <select id="teamAssignProject" onchange="teamAssignProjectId = this.value" style="width:130px">
+        ${projectOptions}
+      </select>
+    </div>
+    <button class="btn" style="font-size:11px;padding:3px 10px" onclick="assignSelectedAgentsToProject()" ${selectedCount && teamAssignProjectId ? '' : 'disabled'}>Assign selected</button>
+    <div class="team-bulk-field">
+      <label for="bulkHarness">Harness</label>
+      <select id="bulkHarness" onchange="onBulkHarnessChange()">
+        <option value=""${teamBulkDraft.harness === '' ? ' selected' : ''}>Keep</option>
+        <option value="claude"${teamBulkDraft.harness === 'claude' ? ' selected' : ''}>Claude</option>
+        <option value="codex"${teamBulkDraft.harness === 'codex' ? ' selected' : ''}>Codex</option>
+        <option value="acp"${teamBulkDraft.harness === 'acp' ? ' selected' : ''}>ACP</option>
+      </select>
+    </div>
+    <div class="team-bulk-field">
+      <label for="bulkModel">Model</label>
+      <input id="bulkModel" list="teamModelOptions" value="${escAttr(teamBulkDraft.model)}" placeholder="unchanged" oninput="updateTeamBulkDraftFromInputs()">
+      <datalist id="teamModelOptions">${modelOptions}</datalist>
+    </div>
+    <div class="team-bulk-field" id="bulkAcpProviderWrap" style="${acpStyle}">
+      <label for="bulkAcpProvider">Provider</label>
+      <select id="bulkAcpProvider" onchange="onBulkProviderChange()">
+        <option value="opencode"${teamBulkDraft.acp_provider === 'opencode' ? ' selected' : ''}>OpenCode</option>
+        <option value="cursor"${teamBulkDraft.acp_provider === 'cursor' ? ' selected' : ''}>Cursor Agent</option>
+        <option value="custom"${teamBulkDraft.acp_provider === 'custom' ? ' selected' : ''}>Custom URL</option>
+      </select>
+    </div>
+    <div class="team-bulk-field" id="bulkAcpUrlWrap" style="${teamBulkDraft.harness === 'acp' && teamBulkDraft.acp_provider === 'custom' ? '' : 'display:none'}">
+      <label for="bulkAcpUrl">URL</label>
+      <input id="bulkAcpUrl" value="${escAttr(teamBulkDraft.acp_url)}" placeholder="http://localhost:4096" oninput="updateTeamBulkDraftFromInputs()">
+    </div>
+    <span class="team-bulk-status" id="teamBulkStatus" style="color:${statusColor}">${escHtml(teamBulkStatus.text)}</span>
+    <button class="btn primary" style="font-size:11px;padding:3px 10px" onclick="saveBulkAgentConfig()" ${selectedCount ? '' : 'disabled'}>Save selected</button>
+    <button class="btn" style="font-size:11px;padding:3px 10px" onclick="clearTeamSelection()" ${selectedCount ? '' : 'disabled'}>Clear</button>
+  </div>`;
+}
+
 function renderTeam() {
   const el = document.getElementById('teamView');
   if (!el) return;
+  normalizeTeamSelection();
   if (!members.length) {
+    selectedTeamEmployeeIds.clear();
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:12px">No employees yet.</div>';
     return;
   }
-  el.innerHTML = members.map(m => {
+  const selectableAgents = members.filter(isSelectableTeamAgent);
+  const toolbar = renderTeamBulkToolbar(selectableAgents);
+  const cards = members.map(m => {
     const roleColor = m.role === 'commander' ? 'var(--yellow)' : m.role === 'ceo' ? 'var(--accent)' : 'var(--text2)';
     const isWorker = m.role !== 'commander' && m.role !== 'ceo';
+    const selectable = isSelectableTeamAgent(m);
+    const selected = selectedTeamEmployeeIds.has(m.id);
     const canSpawn = m.role !== 'commander';
     const employedBadge = canSpawn
       ? `<span class="emp-badge ${m.employed ? 'employed' : 'not-employed'}">${m.employed ? 'Employed' : 'Not Employed'}</span>`
@@ -1647,8 +1813,9 @@ function renderTeam() {
       : canSpawn && hasWorker
       ? `<button class="btn" style="border-color:var(--red);color:var(--red);padding:2px 8px;font-size:11px" onclick="killWorkerByEmp(${m.id}, '${escHtml(m.nickname)}')">■ Stop</button>`
       : '';
-    return `<div class="emp-card" id="emp-card-${m.id}">
+    return `<div class="emp-card ${selected ? 'selected' : ''}" id="emp-card-${m.id}">
       <div class="emp-header">
+        <input class="team-select" type="checkbox" title="${selectable ? 'Select agent' : 'Only worker agents can be selected'}" onchange="toggleTeamSelection(${m.id}, this.checked)" ${selected ? 'checked' : ''} ${selectable ? '' : 'disabled'}>
         <span class="emp-id">#${m.id}</span>
         <span class="emp-nick">${escHtml(m.nickname)}</span>
         ${employedBadge}
@@ -1682,6 +1849,144 @@ function renderTeam() {
       </div>
     </div>`;
   }).join('');
+  el.innerHTML = toolbar + cards;
+}
+
+function toggleTeamSelection(id, checked) {
+  updateTeamBulkDraftFromInputs();
+  const emp = members.find(m => m.id === id);
+  if (!isSelectableTeamAgent(emp)) return;
+  if (checked) selectedTeamEmployeeIds.add(id);
+  else selectedTeamEmployeeIds.delete(id);
+  setTeamBulkStatus('');
+  renderTeam();
+}
+
+function toggleAllTeamSelection(checked) {
+  updateTeamBulkDraftFromInputs();
+  selectedTeamEmployeeIds.clear();
+  if (checked) {
+    members.filter(isSelectableTeamAgent).forEach(m => selectedTeamEmployeeIds.add(m.id));
+  }
+  setTeamBulkStatus('');
+  renderTeam();
+}
+
+function clearTeamSelection() {
+  updateTeamBulkDraftFromInputs();
+  selectedTeamEmployeeIds.clear();
+  setTeamBulkStatus('');
+  renderTeam();
+}
+
+async function assignSelectedAgentsToProject() {
+  updateTeamBulkDraftFromInputs();
+  const selected = selectedTeamAgents();
+  const projectId = document.getElementById('teamAssignProject')?.value || teamAssignProjectId;
+  teamAssignProjectId = projectId;
+  if (!selected.length) {
+    setTeamBulkStatus('No worker agents selected.', true);
+    return;
+  }
+  if (!projectId) {
+    setTeamBulkStatus('No project selected.', true);
+    return;
+  }
+  setTeamBulkStatus('Assigning selected agents...');
+  try {
+    const res = await fetch(`/api/projects/${projectId}/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employee_ids: selected.map(m => m.id) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Project assignment failed');
+    const projectName = data.project?.name || projects.find(p => String(p.id) === String(projectId))?.name || 'project';
+    setTeamBulkStatus(`Assigned ${selected.length} agent(s) to ${projectName}.`);
+    await loadProjects();
+  } catch (err) {
+    setTeamBulkStatus(err.message || 'Project assignment failed', true);
+  }
+}
+
+function onBulkHarnessChange() {
+  const harnessEl = document.getElementById('bulkHarness');
+  const modelEl = document.getElementById('bulkModel');
+  const providerWrap = document.getElementById('bulkAcpProviderWrap');
+  const urlWrap = document.getElementById('bulkAcpUrlWrap');
+  const providerEl = document.getElementById('bulkAcpProvider');
+  const harness = harnessEl?.value || '';
+  if (modelEl && harness === 'codex' && (!modelEl.value || modelEl.value === 'opus')) modelEl.value = 'gpt-5.4';
+  else if (modelEl && harness && harness !== 'codex' && modelEl.value === 'gpt-5.4') modelEl.value = 'opus';
+  if (providerWrap) providerWrap.style.display = harness === 'acp' ? '' : 'none';
+  if (urlWrap) urlWrap.style.display = harness === 'acp' && providerEl?.value === 'custom' ? '' : 'none';
+  updateTeamBulkDraftFromInputs();
+}
+
+function onBulkProviderChange() {
+  const provider = document.getElementById('bulkAcpProvider')?.value || 'opencode';
+  const urlWrap = document.getElementById('bulkAcpUrlWrap');
+  if (urlWrap) urlWrap.style.display = provider === 'custom' ? '' : 'none';
+  updateTeamBulkDraftFromInputs();
+}
+
+async function saveBulkAgentConfig() {
+  updateTeamBulkDraftFromInputs();
+  const selected = selectedTeamAgents();
+  if (!selected.length) {
+    setTeamBulkStatus('No worker agents selected.', true);
+    return;
+  }
+  const body = { employee_ids: selected.map(m => m.id) };
+  const model = (teamBulkDraft.model || '').trim();
+  if (teamBulkDraft.harness) body.harness = teamBulkDraft.harness;
+  if (model) body.model = model;
+  if (teamBulkDraft.harness === 'acp') {
+    body.acp_provider = teamBulkDraft.acp_provider === 'custom' ? '' : (teamBulkDraft.acp_provider || 'opencode');
+    body.acp_url = teamBulkDraft.acp_provider === 'custom' ? (teamBulkDraft.acp_url || '').trim() : '';
+  }
+  if (!body.harness && !body.model) {
+    setTeamBulkStatus('Choose a harness or model before saving.', true);
+    return;
+  }
+
+  const btn = document.querySelector('.team-bulk-bar .btn.primary');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+  }
+  setTeamBulkStatus('Saving selected agents...');
+  try {
+    const res = await fetch('/api/employees/bulk-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Bulk save failed');
+
+    (data.updated || []).forEach(updated => {
+      const idx = members.findIndex(m => m.id === updated.id);
+      if (idx >= 0) members[idx] = { ...members[idx], ...updated };
+    });
+
+    const failures = (data.results || []).filter(r => !r.ok);
+    if (failures.length) {
+      const detail = failures.slice(0, 3).map(r => `${r.nickname || '#' + r.employee_id}: ${r.error}`).join('; ');
+      setTeamBulkStatus(`${data.success_count || 0} saved, ${failures.length} failed. ${detail}`, true);
+    } else {
+      setTeamBulkStatus(`Saved ${data.success_count || selected.length} agent(s).`);
+    }
+    await loadMembers();
+  } catch (err) {
+    setTeamBulkStatus(err.message || 'Bulk save failed', true);
+  } finally {
+    const currentBtn = document.querySelector('.team-bulk-bar .btn.primary');
+    if (currentBtn) {
+      currentBtn.disabled = selectedTeamEmployeeIds.size === 0;
+      currentBtn.textContent = 'Save selected';
+    }
+  }
 }
 
 function onHarnessChange(id) {

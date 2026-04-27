@@ -16,13 +16,39 @@ type Employee struct {
 	LastConnected string `json:"last_connected,omitempty"`
 }
 
+// BulkEmployeeConfigRequest updates harness/model settings for selected agents.
+type BulkEmployeeConfigRequest struct {
+	EmployeeIDs []int64 `json:"employee_ids"`
+	Harness     *string `json:"harness,omitempty"`
+	Model       *string `json:"model,omitempty"`
+	ACPURL      *string `json:"acp_url,omitempty"`
+	ACPProvider *string `json:"acp_provider,omitempty"`
+}
+
+// BulkEmployeeConfigResult is the per-employee result for a bulk config update.
+type BulkEmployeeConfigResult struct {
+	EmployeeID int64  `json:"employee_id"`
+	Nickname   string `json:"nickname,omitempty"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+}
+
+// BulkEmployeeConfigResponse summarizes a bulk config update.
+type BulkEmployeeConfigResponse struct {
+	Results      []BulkEmployeeConfigResult `json:"results"`
+	Updated      []Employee                 `json:"updated"`
+	SuccessCount int                        `json:"success_count"`
+	FailureCount int                        `json:"failure_count"`
+}
+
 // Project represents a codebase being worked on.
 type Project struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	GitRemote string `json:"git_remote,omitempty"`
-	CreatedAt string `json:"created_at"`
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	Path               string `json:"path"`
+	GitRemote          string `json:"git_remote,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	AssignedAgentCount int    `json:"assigned_agent_count"`
 }
 
 // Task represents a unit of work within a project.
@@ -82,10 +108,10 @@ type Review struct {
 	WorkerNick  string `json:"worker_nick"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
-	Type        string `json:"type"`                    // choice, approval, form, info
-	Body        string `json:"body"`                    // JSON string, schema depends on type
-	Status      string `json:"status"`                  // pending, responded, expired
-	Response    string `json:"response,omitempty"`       // JSON response from commander
+	Type        string `json:"type"`               // choice, approval, form, info
+	Body        string `json:"body"`               // JSON string, schema depends on type
+	Status      string `json:"status"`             // pending, responded, expired
+	Response    string `json:"response,omitempty"` // JSON response from commander
 	CreatedAt   string `json:"created_at"`
 	RespondedAt string `json:"responded_at,omitempty"`
 }
@@ -123,14 +149,14 @@ type Plugin struct {
 	Name      string `json:"name"`
 	Path      string `json:"path"`
 	Enabled   bool   `json:"enabled"`
-	Scope     string `json:"scope"` // PluginScopeHost (default) | PluginScopeWorker
+	Scope     string `json:"scope"`            // PluginScopeHost (default) | PluginScopeWorker
 	Config    any    `json:"config,omitempty"` // parsed JSON
 	CreatedAt string `json:"created_at"`
 
 	// runtime (not persisted)
 	LoadedInWorkers int      `json:"loaded_in_workers"`
 	Tools           []string `json:"tools,omitempty"`
-	Status          string   `json:"status,omitempty"`     // enabled | disabled | error
+	Status          string   `json:"status,omitempty"` // enabled | disabled | error
 	LastError       string   `json:"last_error,omitempty"`
 }
 

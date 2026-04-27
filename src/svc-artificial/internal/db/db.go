@@ -210,7 +210,16 @@ var migrations = []migration{
 		CREATE INDEX IF NOT EXISTS idx_task_runners_task ON task_runners(task_id);
 		CREATE INDEX IF NOT EXISTS idx_task_runners_status ON task_runners(status);
 	`},
-	// -- future migrations go here as {5, `...`}, etc.
+	{5, `
+		CREATE TABLE IF NOT EXISTS project_assignments (
+			project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+			assigned_at TEXT DEFAULT (datetime('now')),
+			PRIMARY KEY (project_id, employee_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_project_assignments_employee ON project_assignments(employee_id);
+	`},
+	// -- future migrations go here as {6, `...`}, etc.
 }
 
 func now() string { return time.Now().UTC().Format(time.DateTime) }
@@ -386,8 +395,12 @@ func (d *DB) GetProject(id int64) (protocol.Project, error) {
 	var p protocol.Project
 	var path, remote sql.NullString
 	err := d.db.QueryRow(
-		`SELECT id, name, path, git_remote, created_at FROM projects WHERE id = ?`, id,
-	).Scan(&p.ID, &p.Name, &path, &remote, &p.CreatedAt)
+		`SELECT p.id, p.name, p.path, p.git_remote, p.created_at, COUNT(pa.employee_id)
+		 FROM projects p
+		 LEFT JOIN project_assignments pa ON pa.project_id = p.id
+		 WHERE p.id = ?
+		 GROUP BY p.id`, id,
+	).Scan(&p.ID, &p.Name, &path, &remote, &p.CreatedAt, &p.AssignedAgentCount)
 	p.Path = path.String
 	p.GitRemote = remote.String
 	return p, err
@@ -398,8 +411,12 @@ func (d *DB) GetProjectByName(name string) (protocol.Project, error) {
 	var p protocol.Project
 	var path, remote sql.NullString
 	err := d.db.QueryRow(
-		`SELECT id, name, path, git_remote, created_at FROM projects WHERE name = ?`, name,
-	).Scan(&p.ID, &p.Name, &path, &remote, &p.CreatedAt)
+		`SELECT p.id, p.name, p.path, p.git_remote, p.created_at, COUNT(pa.employee_id)
+		 FROM projects p
+		 LEFT JOIN project_assignments pa ON pa.project_id = p.id
+		 WHERE p.name = ?
+		 GROUP BY p.id`, name,
+	).Scan(&p.ID, &p.Name, &path, &remote, &p.CreatedAt, &p.AssignedAgentCount)
 	p.Path = path.String
 	p.GitRemote = remote.String
 	return p, err
@@ -407,7 +424,13 @@ func (d *DB) GetProjectByName(name string) (protocol.Project, error) {
 
 // ListProjects returns all projects.
 func (d *DB) ListProjects() ([]protocol.Project, error) {
-	rows, err := d.db.Query(`SELECT id, name, path, git_remote, created_at FROM projects ORDER BY id`)
+	rows, err := d.db.Query(
+		`SELECT p.id, p.name, p.path, p.git_remote, p.created_at, COUNT(pa.employee_id)
+		 FROM projects p
+		 LEFT JOIN project_assignments pa ON pa.project_id = p.id
+		 GROUP BY p.id
+		 ORDER BY p.id`,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +439,7 @@ func (d *DB) ListProjects() ([]protocol.Project, error) {
 	for rows.Next() {
 		var p protocol.Project
 		var path, remote sql.NullString
-		if err := rows.Scan(&p.ID, &p.Name, &path, &remote, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &path, &remote, &p.CreatedAt, &p.AssignedAgentCount); err != nil {
 			return nil, err
 		}
 		p.Path = path.String
@@ -430,6 +453,90 @@ func (d *DB) ListProjects() ([]protocol.Project, error) {
 func (d *DB) DeleteProject(id int64) error {
 	_, err := d.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
 	return err
+}
+
+// AssignEmployeesToProject adds employees to a project without removing existing assignments.
+func (d *DB) AssignEmployeesToProject(projectID int64, employeeIDs []int64) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	ts := now()
+	for _, employeeID := range employeeIDs {
+		if employeeID <= 0 {
+			continue
+		}
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO project_assignments (project_id, employee_id, assigned_at) VALUES (?, ?, ?)`,
+			projectID, employeeID, ts,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SetProjectEmployees replaces every employee assignment for a project.
+func (d *DB) SetProjectEmployees(projectID int64, employeeIDs []int64) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM project_assignments WHERE project_id = ?`, projectID); err != nil {
+		return err
+	}
+	ts := now()
+	for _, employeeID := range employeeIDs {
+		if employeeID <= 0 {
+			continue
+		}
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO project_assignments (project_id, employee_id, assigned_at) VALUES (?, ?, ?)`,
+			projectID, employeeID, ts,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// RemoveEmployeeFromProject removes a single employee assignment from a project.
+func (d *DB) RemoveEmployeeFromProject(projectID, employeeID int64) error {
+	_, err := d.db.Exec(`DELETE FROM project_assignments WHERE project_id = ? AND employee_id = ?`, projectID, employeeID)
+	return err
+}
+
+// ListProjectEmployees returns employees assigned to a project.
+func (d *DB) ListProjectEmployees(projectID int64) ([]protocol.Employee, error) {
+	rows, err := d.db.Query(
+		`SELECT e.id, e.nickname, e.role, e.persona, e.email, e.employed, e.harness, e.model, e.acp_url, e.acp_provider, e.created_at, e.last_connected
+		 FROM project_assignments pa
+		 JOIN employees e ON e.id = pa.employee_id
+		 WHERE pa.project_id = ?
+		 ORDER BY lower(e.nickname)`,
+		projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []protocol.Employee
+	for rows.Next() {
+		var e protocol.Employee
+		var email, lastConn sql.NullString
+		if err := rows.Scan(&e.ID, &e.Nickname, &e.Role, &e.Persona, &email, &e.Employed, &e.Harness, &e.Model, &e.ACPURL, &e.ACPProvider, &e.CreatedAt, &lastConn); err != nil {
+			return nil, err
+		}
+		e.Email = email.String
+		e.LastConnected = lastConn.String
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // ── Channels ────────────────────────────────────────────────────────────
@@ -1518,15 +1625,15 @@ func scanTaskRunner(r interface {
 	Scan(dest ...any) error
 }) (protocol.TaskRunner, error) {
 	var (
-		tr           protocol.TaskRunner
-		parentNick   string
-		baseBranch   string
-		harnessInUse int
-		lastSummary  string
+		tr            protocol.TaskRunner
+		parentNick    string
+		baseBranch    string
+		harnessInUse  int
+		lastSummary   string
 		blockedReason string
-		logPath      string
-		lastHB       sql.NullString
-		finishedAt   sql.NullString
+		logPath       string
+		lastHB        sql.NullString
+		finishedAt    sql.NullString
 	)
 	if err := r.Scan(
 		&tr.ID, &tr.TaskID, &tr.Nickname, &parentNick, &tr.PID, &tr.Status,

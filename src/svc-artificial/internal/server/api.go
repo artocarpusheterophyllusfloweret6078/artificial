@@ -37,6 +37,7 @@ var (
 func (s *Server) registerAPI() {
 	s.Mux.HandleFunc("GET /api/employees", s.apiListEmployees)
 	s.Mux.HandleFunc("POST /api/employees", s.apiCreateEmployee)
+	s.Mux.HandleFunc("PUT /api/employees/bulk-config", s.apiBulkUpdateEmployeeConfig)
 	s.Mux.HandleFunc("GET /api/employees/{id}", s.apiGetEmployee)
 	s.Mux.HandleFunc("PUT /api/employees/{id}", s.apiUpdateEmployee)
 	s.Mux.HandleFunc("GET /api/employees/suggest-name", s.apiSuggestName)
@@ -45,6 +46,11 @@ func (s *Server) registerAPI() {
 	s.Mux.HandleFunc("GET /api/projects", s.apiListProjects)
 	s.Mux.HandleFunc("POST /api/projects", s.apiCreateProject)
 	s.Mux.HandleFunc("DELETE /api/projects/{id}", s.apiDeleteProject)
+	s.Mux.HandleFunc("GET /api/projects/{id}/agents", s.apiListProjectAgents)
+	s.Mux.HandleFunc("POST /api/projects/{id}/agents", s.apiAddProjectAgents)
+	s.Mux.HandleFunc("PUT /api/projects/{id}/agents", s.apiSetProjectAgents)
+	s.Mux.HandleFunc("DELETE /api/projects/{id}/agents/{employeeID}", s.apiRemoveProjectAgent)
+	s.Mux.HandleFunc("POST /api/projects/{id}/spawn-assigned", s.apiSpawnProjectAgents)
 
 	s.Mux.HandleFunc("GET /api/channels", s.apiListChannels)
 	s.Mux.HandleFunc("GET /api/dm-channels", s.apiListDMChannels)
@@ -153,9 +159,9 @@ func (s *Server) apiUpdateEmployee(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Persona  *string `json:"persona"`
-		Email    *string `json:"email"`
-		Employed *int    `json:"employed"`
+		Persona     *string `json:"persona"`
+		Email       *string `json:"email"`
+		Employed    *int    `json:"employed"`
 		Harness     *string `json:"harness"`
 		Model       *string `json:"model"`
 		ACPURL      *string `json:"acp_url"`
@@ -183,6 +189,109 @@ func (s *Server) apiUpdateEmployee(w http.ResponseWriter, r *http.Request) {
 	}
 	emp, _ := s.DB.GetEmployee(id)
 	writeJSON(w, emp)
+}
+
+func (s *Server) apiBulkUpdateEmployeeConfig(w http.ResponseWriter, r *http.Request) {
+	var input protocol.BulkEmployeeConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, 400, "invalid json")
+		return
+	}
+	if len(input.EmployeeIDs) == 0 {
+		writeErr(w, 400, "employee_ids required")
+		return
+	}
+	if input.Harness == nil && input.Model == nil && input.ACPURL == nil && input.ACPProvider == nil {
+		writeErr(w, 400, "harness or model required")
+		return
+	}
+	if input.Harness != nil {
+		h := strings.TrimSpace(*input.Harness)
+		if h != "claude" && h != "codex" && h != "acp" {
+			writeErr(w, 400, "invalid harness")
+			return
+		}
+		input.Harness = &h
+	}
+	if input.Model != nil {
+		m := strings.TrimSpace(*input.Model)
+		if m == "" {
+			writeErr(w, 400, "model cannot be blank")
+			return
+		}
+		input.Model = &m
+	}
+	if input.ACPProvider != nil {
+		p := strings.TrimSpace(*input.ACPProvider)
+		if p != "" && p != "opencode" && p != "cursor" {
+			writeErr(w, 400, "invalid acp_provider")
+			return
+		}
+		input.ACPProvider = &p
+	}
+	if input.ACPURL != nil {
+		u := strings.TrimSpace(*input.ACPURL)
+		input.ACPURL = &u
+	}
+
+	seen := map[int64]bool{}
+	resp := protocol.BulkEmployeeConfigResponse{}
+	for _, id := range input.EmployeeIDs {
+		result := protocol.BulkEmployeeConfigResult{EmployeeID: id}
+		if id == 0 {
+			result.Error = "invalid employee id"
+			resp.Results = append(resp.Results, result)
+			resp.FailureCount++
+			continue
+		}
+		if seen[id] {
+			result.Error = "duplicate employee id"
+			resp.Results = append(resp.Results, result)
+			resp.FailureCount++
+			continue
+		}
+		seen[id] = true
+
+		emp, err := s.DB.GetEmployee(id)
+		if err != nil {
+			result.Error = "employee not found"
+			resp.Results = append(resp.Results, result)
+			resp.FailureCount++
+			continue
+		}
+		result.Nickname = emp.Nickname
+		if emp.Role != "worker" {
+			result.Error = "only worker agents can be bulk-edited"
+			resp.Results = append(resp.Results, result)
+			resp.FailureCount++
+			continue
+		}
+
+		if err := s.DB.UpdateEmployeeHarness(id, input.Harness, input.Model, input.ACPURL, input.ACPProvider); err != nil {
+			result.Error = err.Error()
+			resp.Results = append(resp.Results, result)
+			resp.FailureCount++
+			continue
+		}
+		updated, err := s.DB.GetEmployee(id)
+		if err != nil {
+			result.Error = err.Error()
+			resp.Results = append(resp.Results, result)
+			resp.FailureCount++
+			continue
+		}
+		result.OK = true
+		resp.Results = append(resp.Results, result)
+		resp.Updated = append(resp.Updated, updated)
+		resp.SuccessCount++
+	}
+	if resp.Results == nil {
+		resp.Results = []protocol.BulkEmployeeConfigResult{}
+	}
+	if resp.Updated == nil {
+		resp.Updated = []protocol.Employee{}
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) apiSuggestName(w http.ResponseWriter, r *http.Request) {
@@ -322,6 +431,213 @@ func (s *Server) apiDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+func (s *Server) apiListProjectAgents(w http.ResponseWriter, r *http.Request) {
+	id := pathID(r, "id")
+	if _, err := s.DB.GetProject(id); err != nil {
+		writeErr(w, 404, "project not found")
+		return
+	}
+	agents, err := s.DB.ListProjectEmployees(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if agents == nil {
+		agents = []protocol.Employee{}
+	}
+	writeJSON(w, agents)
+}
+
+func (s *Server) apiAddProjectAgents(w http.ResponseWriter, r *http.Request) {
+	projectID := pathID(r, "id")
+	if _, err := s.DB.GetProject(projectID); err != nil {
+		writeErr(w, 404, "project not found")
+		return
+	}
+	var input struct {
+		EmployeeIDs []int64 `json:"employee_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, 400, "invalid json")
+		return
+	}
+	employeeIDs, status, msg := s.validateProjectAgentIDs(input.EmployeeIDs)
+	if msg != "" {
+		writeErr(w, status, msg)
+		return
+	}
+	if len(employeeIDs) == 0 {
+		writeErr(w, 400, "employee_ids required")
+		return
+	}
+	if err := s.DB.AssignEmployeesToProject(projectID, employeeIDs); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	s.writeProjectAgents(w, projectID)
+}
+
+func (s *Server) apiSetProjectAgents(w http.ResponseWriter, r *http.Request) {
+	projectID := pathID(r, "id")
+	if _, err := s.DB.GetProject(projectID); err != nil {
+		writeErr(w, 404, "project not found")
+		return
+	}
+	var input struct {
+		EmployeeIDs []int64 `json:"employee_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, 400, "invalid json")
+		return
+	}
+	employeeIDs, status, msg := s.validateProjectAgentIDs(input.EmployeeIDs)
+	if msg != "" {
+		writeErr(w, status, msg)
+		return
+	}
+	if err := s.DB.SetProjectEmployees(projectID, employeeIDs); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	s.writeProjectAgents(w, projectID)
+}
+
+func (s *Server) apiRemoveProjectAgent(w http.ResponseWriter, r *http.Request) {
+	projectID := pathID(r, "id")
+	employeeID := pathID(r, "employeeID")
+	if _, err := s.DB.GetProject(projectID); err != nil {
+		writeErr(w, 404, "project not found")
+		return
+	}
+	if err := s.DB.RemoveEmployeeFromProject(projectID, employeeID); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
+
+func (s *Server) apiSpawnProjectAgents(w http.ResponseWriter, r *http.Request) {
+	projectID := pathID(r, "id")
+	project, err := s.DB.GetProject(projectID)
+	if err != nil {
+		writeErr(w, 404, "project not found")
+		return
+	}
+	agents, err := s.DB.ListProjectEmployees(projectID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+
+	type agentSpawnResult struct {
+		EmployeeID int64  `json:"employee_id"`
+		Employee   string `json:"employee"`
+		Status     string `json:"status"`
+		Message    string `json:"message,omitempty"`
+		Error      string `json:"error,omitempty"`
+	}
+
+	results := make([]agentSpawnResult, 0, len(agents))
+	spawned := make([]string, 0, len(agents))
+	successCount := 0
+	skippedCount := 0
+	failureCount := 0
+	for _, agent := range agents {
+		if agent.Role != "worker" {
+			skippedCount++
+			results = append(results, agentSpawnResult{
+				EmployeeID: agent.ID,
+				Employee:   agent.Nickname,
+				Status:     "skipped",
+				Message:    "not a worker agent",
+			})
+			continue
+		}
+		if existing := s.getActiveWorker(agent.ID); existing != nil {
+			skippedCount++
+			results = append(results, agentSpawnResult{
+				EmployeeID: agent.ID,
+				Employee:   agent.Nickname,
+				Status:     "skipped",
+				Message:    fmt.Sprintf("already running (PID %d)", existing.PID),
+			})
+			continue
+		}
+		spawnedResult, _, err := s.spawnWorkerForEmployee(agent.ID)
+		if err != nil {
+			failureCount++
+			results = append(results, agentSpawnResult{
+				EmployeeID: agent.ID,
+				Employee:   agent.Nickname,
+				Status:     "failed",
+				Error:      err.Error(),
+			})
+			continue
+		}
+		successCount++
+		spawned = append(spawned, agent.Nickname)
+		results = append(results, agentSpawnResult{
+			EmployeeID: agent.ID,
+			Employee:   agent.Nickname,
+			Status:     "spawned",
+			Message:    spawnedResult.Message,
+		})
+	}
+
+	writeJSON(w, map[string]any{
+		"project":       project,
+		"results":       results,
+		"spawned":       spawned,
+		"success_count": successCount,
+		"skipped_count": skippedCount,
+		"failure_count": failureCount,
+		"message":       fmt.Sprintf("Spawned %d, skipped %d, failed %d assigned agent(s)", successCount, skippedCount, failureCount),
+	})
+}
+
+func (s *Server) writeProjectAgents(w http.ResponseWriter, projectID int64) {
+	project, err := s.DB.GetProject(projectID)
+	if err != nil {
+		writeErr(w, 404, "project not found")
+		return
+	}
+	agents, err := s.DB.ListProjectEmployees(projectID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if agents == nil {
+		agents = []protocol.Employee{}
+	}
+	writeJSON(w, map[string]any{
+		"project": project,
+		"agents":  agents,
+	})
+}
+
+func (s *Server) validateProjectAgentIDs(ids []int64) ([]int64, int, string) {
+	seen := make(map[int64]bool, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, 400, "invalid employee_id"
+		}
+		if seen[id] {
+			continue
+		}
+		emp, err := s.DB.GetEmployee(id)
+		if err != nil {
+			return nil, 404, fmt.Sprintf("employee %d not found", id)
+		}
+		if emp.Role != "worker" {
+			return nil, 400, fmt.Sprintf("%s is not a worker agent", emp.Nickname)
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, 0, ""
 }
 
 // ── Channels ────────────────────────────────────────────────────────────
@@ -484,55 +800,58 @@ func (s *Server) apiSpawnWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify employee exists
-	emp, err := s.DB.GetEmployee(input.EmployeeID)
+	result, status, err := s.spawnWorkerForEmployee(input.EmployeeID)
 	if err != nil {
-		writeErr(w, 404, "employee not found")
+		writeErr(w, status, err.Error())
 		return
+	}
+	w.WriteHeader(status)
+	writeJSON(w, result)
+}
+
+type spawnWorkerResult struct {
+	WorkerID int64  `json:"worker_id"`
+	PID      int    `json:"pid"`
+	Employee string `json:"employee"`
+	Message  string `json:"message"`
+}
+
+func (s *Server) spawnWorkerForEmployee(employeeID int64) (spawnWorkerResult, int, error) {
+	emp, err := s.DB.GetEmployee(employeeID)
+	if err != nil {
+		return spawnWorkerResult{}, http.StatusNotFound, fmt.Errorf("employee not found")
 	}
 	if emp.Role == "commander" {
-		writeErr(w, 400, "cannot spawn a worker for the commander")
-		return
+		return spawnWorkerResult{}, http.StatusBadRequest, fmt.Errorf("cannot spawn a worker for the commander")
+	}
+	if existing := s.getActiveWorker(employeeID); existing != nil {
+		return spawnWorkerResult{}, http.StatusConflict, fmt.Errorf("worker already running for %s (PID %d)", emp.Nickname, existing.PID)
 	}
 
-	// Check if a worker is already running for this employee
-	if existing := s.getActiveWorker(input.EmployeeID); existing != nil {
-		writeErr(w, 409, fmt.Sprintf("worker already running for %s (PID %d)", emp.Nickname, existing.PID))
-		return
-	}
-
-	// Find the worker binary (sibling first, then PATH; supports both
-	// `cmd-worker` and `worker` names — see findWorkerBin).
 	workerBin := s.WorkerBin
 	if workerBin == "" {
 		workerBin = findWorkerBin()
 	}
 	if workerBin == "" {
-		writeErr(w, 500, "cmd-worker binary not found; set --worker-bin flag")
-		return
+		return spawnWorkerResult{}, http.StatusInternalServerError, fmt.Errorf("cmd-worker binary not found; set --worker-bin flag")
 	}
 
-	// Create log file for worker stdout/stderr
 	serverAddr := fmt.Sprintf("localhost:%d", s.Port)
 	home, _ := os.UserHomeDir()
 	logsDir := filepath.Join(home, ".config", "artificial", "logs")
 	os.MkdirAll(logsDir, 0755)
 	logPath := filepath.Join(logsDir, fmt.Sprintf("worker-%s-%d.log", emp.Nickname, time.Now().Unix()))
 
-	// Pre-create the worker record with log path.
-	preWorker, err := s.DB.CreateWorker(input.EmployeeID, 0, logPath)
+	preWorker, err := s.DB.CreateWorker(employeeID, 0, logPath)
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
+		return spawnWorkerResult{}, http.StatusInternalServerError, err
 	}
 
 	cmd := exec.Command(workerBin,
 		"--server", serverAddr,
-		"--employee-id", strconv.FormatInt(input.EmployeeID, 10),
+		"--employee-id", strconv.FormatInt(employeeID, 10),
 		"--worker-id", strconv.FormatInt(preWorker.ID, 10),
 	)
-
-	// Detach: new session so it survives svc-artificial being killed
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 
@@ -546,32 +865,27 @@ func (s *Server) apiSpawnWorker(w http.ResponseWriter, r *http.Request) {
 		if logFile != nil {
 			logFile.Close()
 		}
-		writeErr(w, 500, fmt.Sprintf("spawn failed: %v", err))
-		return
+		s.DB.UpdateWorkerStatus(preWorker.ID, "offline")
+		return spawnWorkerResult{}, http.StatusInternalServerError, fmt.Errorf("spawn failed: %v", err)
 	}
 
-	// Close log file handle in parent — the child has its own fd now
 	if logFile != nil {
 		logFile.Close()
 	}
 
 	pid := cmd.Process.Pid
-
-	// Release the process so we don't wait on it
 	cmd.Process.Release()
 
-	// Update the pre-created worker with the actual PID
 	s.DB.UpdateWorkerStatus(preWorker.ID, "online")
 	s.DB.UpdateWorkerPID(preWorker.ID, pid)
-
-	w.WriteHeader(201)
-	writeJSON(w, map[string]any{
-		"worker_id": preWorker.ID,
-		"pid":       pid,
-		"employee":  emp.Nickname,
-		"message":   fmt.Sprintf("spawned cmd-worker for %s (PID %d)", emp.Nickname, pid),
-	})
 	s.Hub.BroadcastWorkerStatus(emp.Nickname, "online")
+
+	return spawnWorkerResult{
+		WorkerID: preWorker.ID,
+		PID:      pid,
+		Employee: emp.Nickname,
+		Message:  fmt.Sprintf("spawned cmd-worker for %s (PID %d)", emp.Nickname, pid),
+	}, http.StatusCreated, nil
 }
 
 func (s *Server) apiRespawnAll(w http.ResponseWriter, r *http.Request) {
@@ -647,7 +961,7 @@ type responseCapture struct {
 	body    bytes.Buffer
 }
 
-func (r *responseCapture) Header() http.Header        { return r.headers }
+func (r *responseCapture) Header() http.Header         { return r.headers }
 func (r *responseCapture) Write(b []byte) (int, error) { return r.body.Write(b) }
 func (r *responseCapture) WriteHeader(s int)           { r.status = s }
 
