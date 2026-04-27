@@ -221,6 +221,9 @@ func (s *Server) spawnRunnerForTask(taskID int64, parentNick string) (protocol.T
 	if project.Path == "" {
 		return protocol.TaskRunner{}, errors.New("project has no path; cannot create worktree")
 	}
+	if _, _, err := s.taskRunnerAgentConfig(); err != nil {
+		return protocol.TaskRunner{}, err
+	}
 	absProjectPath, err := filepath.Abs(project.Path)
 	if err != nil {
 		return protocol.TaskRunner{}, fmt.Errorf("resolve project path: %w", err)
@@ -355,6 +358,32 @@ func (s *Server) forkRunnerProcess(tr protocol.TaskRunner, logPath string) (int,
 	return pid, nil
 }
 
+func (s *Server) taskRunnerAgentConfig() (string, string, error) {
+	harness, err := s.DB.GetSetting("task_runner_harness")
+	if err != nil {
+		return "", "", fmt.Errorf("read task runner harness setting: %w", err)
+	}
+	if harness == "" {
+		harness = "claude"
+	}
+	harness, err = normalizeSetting("task_runner_harness", harness)
+	if err != nil {
+		return "", "", err
+	}
+	model, err := s.DB.GetSetting("task_runner_model")
+	if err != nil {
+		return "", "", fmt.Errorf("read task runner model setting: %w", err)
+	}
+	model, err = normalizeSetting("task_runner_model", model)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := exec.LookPath(harness); err != nil {
+		return "", "", fmt.Errorf("task_runner_harness %q selected but %s binary was not found in PATH", harness, harness)
+	}
+	return harness, model, nil
+}
+
 // ── Git plumbing ────────────────────────────────────────────────────────
 
 func isGitRepo(path string) bool {
@@ -378,13 +407,13 @@ func currentBranch(path string) (string, error) {
 // createWorktree creates a worktree at worktreePath on a new branch.
 // Procedure mirrors the project's create-worktree skill so it works for
 // repos protected by git-crypt:
-//   1. `git worktree add --no-checkout` so smudge filters never run
-//      against files we can't decrypt yet.
-//   2. Symlink .git/worktrees/<name>/git-crypt -> ../../git-crypt so the
-//      git-crypt smudge filter, when it does run, can find the keys
-//      stored in the main repo's .git/git-crypt directory.
-//   3. `git checkout HEAD .` inside the worktree to materialize files —
-//      now smudge has access to the keys via the symlink.
+//  1. `git worktree add --no-checkout` so smudge filters never run
+//     against files we can't decrypt yet.
+//  2. Symlink .git/worktrees/<name>/git-crypt -> ../../git-crypt so the
+//     git-crypt smudge filter, when it does run, can find the keys
+//     stored in the main repo's .git/git-crypt directory.
+//  3. `git checkout HEAD .` inside the worktree to materialize files —
+//     now smudge has access to the keys via the symlink.
 //
 // Safe for non-git-crypt repos: the symlink is only created if the
 // source directory exists, and `git checkout HEAD .` is a no-op when
@@ -453,10 +482,17 @@ func (s *Server) apiGetRunnerConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "task not found: "+err.Error())
 		return
 	}
+	harness, model, err := s.taskRunnerAgentConfig()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	cfg := protocol.RunnerConfig{
 		Runner:     tr,
 		Task:       task,
 		ServerAddr: fmt.Sprintf("localhost:%d", s.Port),
+		Harness:    harness,
+		Model:      model,
 	}
 	if task.ProjectID > 0 {
 		if proj, err := s.DB.GetProject(task.ProjectID); err == nil {
@@ -578,9 +614,9 @@ func (s *Server) broadcastRunnerStatus(tr protocol.TaskRunner) {
 // Run() right after the host plugins reconcile.
 func (s *Server) runRunnerWatchdog(ctx context.Context) {
 	const (
-		interval        = 30 * time.Second
-		heartbeatStale  = 90 * time.Second // ~3 missed pings
-		spawnGrace      = 60 * time.Second // give a fresh runner this long before we expect heartbeats
+		interval       = 30 * time.Second
+		heartbeatStale = 90 * time.Second // ~3 missed pings
+		spawnGrace     = 60 * time.Second // give a fresh runner this long before we expect heartbeats
 	)
 	t := time.NewTicker(interval)
 	defer t.Stop()

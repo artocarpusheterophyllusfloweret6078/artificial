@@ -1144,6 +1144,9 @@ func (s *Server) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if settings["task_runner_harness"] == "" {
+		settings["task_runner_harness"] = "claude"
+	}
 	writeJSON(w, settings)
 }
 
@@ -1153,10 +1156,46 @@ func (s *Server) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid json")
 		return
 	}
+	normalized := make(map[string]string, len(input))
 	for k, v := range input {
-		s.DB.SetSetting(k, v)
+		val, err := normalizeSetting(k, v)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		normalized[k] = val
+	}
+	for k, v := range normalized {
+		if err := s.DB.SetSetting(k, v); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	w.WriteHeader(204)
+}
+
+func normalizeSetting(key, value string) (string, error) {
+	v := strings.TrimSpace(value)
+	switch key {
+	case "task_runner_harness":
+		if v == "" {
+			return "claude", nil
+		}
+		if v != "claude" && v != "codex" {
+			return "", fmt.Errorf("task_runner_harness must be claude or codex")
+		}
+		return v, nil
+	case "task_runner_model":
+		if len(v) > 128 {
+			return "", fmt.Errorf("task_runner_model is too long")
+		}
+		if strings.ContainsAny(v, "\r\n\t") {
+			return "", fmt.Errorf("task_runner_model cannot contain whitespace control characters")
+		}
+		return v, nil
+	default:
+		return v, nil
+	}
 }
 
 // apiRecruit generates 3 candidate employees from a description.

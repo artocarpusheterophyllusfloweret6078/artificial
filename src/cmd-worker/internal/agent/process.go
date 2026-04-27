@@ -31,6 +31,7 @@ type Config struct {
 	CompanyKnowledgePath string   // Path to company knowledge directory (optional)
 	InitialPrompt        string   // If set, used as the positional first user-turn prompt instead of the default introduce-yourself / returning-online prompts. Used by ephemeral task runners.
 	SkipChatPrelude      bool     // If true, omit the "You are part of a team / your channels are" team-communication block from the system prompt. Used by runners which have no chat surface.
+	Model                string   // Optional Claude model override.
 }
 
 // Result holds the result of a Claude agent run.
@@ -148,6 +149,9 @@ This contains critical information about CLI tools, deployment workflows, and co
 			"--mcp-config", mcpConfig,
 			"--append-system-prompt", systemPrompt,
 		}
+	}
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
 	}
 
 	// Log file

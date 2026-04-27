@@ -4,7 +4,7 @@ package protocol
 // everything it needs to start: persona, channels, project path, etc.
 type EmployeeConfig struct {
 	Employee             Employee `json:"employee"`
-	Channels             []string `json:"channels"`                        // channel names this employee is a member of
+	Channels             []string `json:"channels"`                         // channel names this employee is a member of
 	Project              *Project `json:"project,omitempty"`                // assigned project (if any)
 	Returning            bool     `json:"returning"`                        // true if this employee has had a previous worker
 	PreviousSessionID    string   `json:"previous_session_id,omitempty"`    // last Claude session ID for resume
@@ -21,6 +21,8 @@ type RunnerConfig struct {
 	Task       Task       `json:"task"`
 	Project    *Project   `json:"project,omitempty"`
 	ServerAddr string     `json:"server_addr"`
+	Harness    string     `json:"harness"`
+	Model      string     `json:"model,omitempty"`
 }
 
 // RunnerCheckpointPayload is the body of MsgRunnerCheckpoint and the
@@ -29,8 +31,8 @@ type RunnerConfig struct {
 // crash-safe "what was I doing" log and as a place for the manager UI
 // to surface incremental work.
 type RunnerCheckpointPayload struct {
-	Summary    string   `json:"summary"`
-	Commits    []string `json:"commits,omitempty"`
+	Summary      string   `json:"summary"`
+	Commits      []string `json:"commits,omitempty"`
 	FilesTouched []string `json:"files_touched,omitempty"`
 }
 

@@ -312,7 +312,7 @@ Chat:
 
 Tasks:
 - task_create: Create a task (tied to current project).
-- task_update: Update status/assignee.
+- task_update: Update status, assignee, or project assignment.
 - task_list: List tasks (defaults to active). Comma-separated statuses or "all".
 - task_get: Get task details including project path.
 - task_grep: Search tasks by title/description.

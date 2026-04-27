@@ -304,6 +304,22 @@ main { flex: 1; display: flex; overflow: hidden; }
         <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Company Knowledge Path</label>
         <input id="settingKnowledgePath" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 8px;color:var(--text);font-size:12px" placeholder="/path/to/company/knowledge">
         <div style="font-size:10px;color:var(--text3);margin-top:4px">Path to a directory with a README.md containing shared docs, CLI tool references, and conventions. Agents are told to read this on startup.</div>
+        <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+          <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Task Runner Harness</label>
+          <div class="emp-config" style="margin-top:0">
+            <div><label>Harness</label><select id="settingRunnerHarness" onchange="onTaskRunnerHarnessChange()">
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </select></div>
+            <div><label>Model</label><input id="settingRunnerModel" list="runnerModelOptions" placeholder="default" style="width:140px"></div>
+            <datalist id="runnerModelOptions">
+              <option value="opus"></option>
+              <option value="sonnet"></option>
+              <option value="gpt-5.4"></option>
+            </datalist>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-top:4px">Used for new task runners. Blank model keeps the selected harness default. ACP is not available for task runners yet.</div>
+        </div>
       </div>
       <div class="emp-footer">
         <span></span>
@@ -2296,16 +2312,37 @@ async function loadSettings() {
   const res = await fetch('/api/settings');
   const data = await res.json();
   document.getElementById('settingKnowledgePath').value = data.company_knowledge_path || '';
+  document.getElementById('settingRunnerHarness').value = data.task_runner_harness || 'claude';
+  document.getElementById('settingRunnerModel').value = data.task_runner_model || '';
+}
+
+function onTaskRunnerHarnessChange() {
+  const harness = document.getElementById('settingRunnerHarness')?.value || 'claude';
+  const modelEl = document.getElementById('settingRunnerModel');
+  if (!modelEl) return;
+  if (harness === 'codex' && (!modelEl.value || modelEl.value === 'opus')) modelEl.value = 'gpt-5.4';
+  else if (harness === 'claude' && modelEl.value === 'gpt-5.4') modelEl.value = 'opus';
 }
 
 async function saveSettings() {
   const knowledgePath = document.getElementById('settingKnowledgePath').value.trim();
-  await fetch('/api/settings', {
+  const runnerHarness = document.getElementById('settingRunnerHarness').value;
+  const runnerModel = document.getElementById('settingRunnerModel').value.trim();
+  const res = await fetch('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ company_knowledge_path: knowledgePath }),
+    body: JSON.stringify({
+      company_knowledge_path: knowledgePath,
+      task_runner_harness: runnerHarness,
+      task_runner_model: runnerModel,
+    }),
   });
-  alert('Settings saved. New workers will pick up the changes.');
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || 'Failed to save settings');
+    return;
+  }
+  alert('Settings saved. New workers and task runners will pick up the changes.');
 }
 
 // Init

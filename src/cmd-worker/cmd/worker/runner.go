@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,14 +21,16 @@ import (
 	"artificial.pt/cmd-worker/internal/mcpserver"
 	"artificial.pt/pkg-go-shared/pluginhost"
 	"artificial.pt/pkg-go-shared/protocol"
+
+	"github.com/creack/pty/v2"
 )
 
 // runTaskRunner is the entry point for cmd-worker invoked with
 // --task-runner. It bypasses the long-lived employee/channel/plugin
 // dance entirely: a runner is an ephemeral process scoped to one
 // task, one worktree, one branch. It calls home for its config, drives
-// Claude through the runner-mode MCP server, and exits as soon as
-// Claude calls task_complete (or crashes).
+// the configured agent through the runner-mode MCP server, and exits as
+// soon as the agent calls task_complete (or crashes).
 //
 // Lifetime invariants:
 //   - exit code 0 only after MsgRunnerComplete has been sent
@@ -61,6 +65,8 @@ func runTaskRunner(serverURL string, runnerID int64) {
 		"nick", cfg.Runner.Nickname,
 		"worktree", cfg.Runner.WorktreePath,
 		"branch", cfg.Runner.BranchName,
+		"harness", cfg.Harness,
+		"model", cfg.Model,
 	)
 
 	nick := cfg.Runner.Nickname
@@ -148,48 +154,34 @@ func runTaskRunner(serverURL string, runnerID int64) {
 		}
 	}()
 
-	// Launch Claude inside the worktree. No channels, no company-
-	// knowledge prelude — the runner persona contains everything it
-	// needs for this single task. ProjectPath is the worktree root so
-	// every Read/Edit/Bash Claude does is scoped to it by default.
+	// Launch the configured agent inside the worktree. No channels, no
+	// company-knowledge prelude — the runner persona contains everything
+	// it needs for this single task. ProjectPath is the worktree root so
+	// every tool call is scoped to it by default.
 	//
-	// Tie the Claude process to runnerCtx (not parentCtx) so a
+	// Tie the agent process to runnerCtx (not parentCtx) so a
 	// task_complete tool call — which cancels runnerCtx — automatically
-	// terminates Claude via exec.CommandContext's SIGKILL-on-cancel
-	// behavior. No manual signal handling needed.
-	proc, err := agent.Start(runnerCtx, agent.Config{
-		MCPPort:         mcpPort,
-		ProjectPath:     cfg.Runner.WorktreePath,
-		Persona:         persona,
-		Nickname:        nick,
-		Channels:        nil,
-		Returning:       false,
-		SkipChatPrelude: true,
-		// Drive Claude straight into the work. The persona contains the
-		// runner protocol; this initial prompt tells it to start with
-		// task_describe and skip any greeting behavior.
-		InitialPrompt: initialPrompt,
-	}, events)
+	// terminates it via exec.CommandContext's SIGKILL-on-cancel behavior.
+	proc, err := startRunnerAgent(runnerCtx, cfg, mcpPort, persona, initialPrompt, events)
 	if err != nil {
-		slog.Error("start runner claude", "err", err)
+		slog.Error("start runner agent", "err", err, "harness", cfg.Harness)
 		// No PID known yet — ask the server to mark us crashed.
-		postRunnerStatus(serverURL, runnerID, protocol.RunnerStatusCrashed, "claude failed to start: "+err.Error())
+		postRunnerStatus(serverURL, runnerID, protocol.RunnerStatusCrashed, "runner agent failed to start: "+err.Error())
 		os.Exit(1)
 	}
 
-	// The initial prompt is the FIRST positional arg passed to claude
-	// (via agent.Config.InitialPrompt) — it lands as the user turn
-	// immediately after Claude reads its system prompt, so we don't
-	// need a separate SendMessage goroutine to inject it later.
+	// The initial prompt is the FIRST user-turn prompt passed to the
+	// selected harness. It tells the runner to call task_describe before
+	// doing any implementation work.
 
-	// Wait for either Claude to exit on its own, or the MCP
+	// Wait for either the agent to exit on its own, or the MCP
 	// task_complete tool to cancel runnerCtx. Whichever fires first
 	// drives shutdown.
-	procDone := make(chan agent.Result, 1)
+	procDone := make(chan runnerAgentResult, 1)
 	go func() {
 		r, err := proc.Wait()
 		if err != nil {
-			slog.Warn("runner claude wait err", "err", err)
+			slog.Warn("runner agent wait err", "err", err)
 		}
 		procDone <- r
 	}()
@@ -201,22 +193,22 @@ func runTaskRunner(serverURL string, runnerID int64) {
 	select {
 	case <-runnerCtx.Done():
 		// task_complete fired (or signal received). exec.CommandContext
-		// is wired to runnerCtx so Claude has already had SIGKILL fired
+		// is wired to runnerCtx so the agent has already had SIGKILL fired
 		// at it; just block until proc.Wait returns so logs/transcript
 		// flushes complete. 5s ceiling keeps us from hanging if the
 		// PTY reader goroutine is wedged.
-		slog.Info("runner: shutdown signal received, waiting for claude to exit")
+		slog.Info("runner: shutdown signal received, waiting for agent to exit")
 		select {
 		case <-procDone:
 		case <-time.After(5 * time.Second):
-			slog.Warn("runner: claude did not exit within 5s, abandoning")
+			slog.Warn("runner: agent did not exit within 5s, abandoning")
 		}
 	case r := <-procDone:
 		// Claude exited without task_complete. Treat as crashed.
 		exitCode = r.ExitCode
 		exitStatus = protocol.RunnerStatusCrashed
-		exitReason = fmt.Sprintf("claude exited (code=%d) without calling task_complete", r.ExitCode)
-		slog.Warn("runner: claude exited without task_complete", "exit_code", r.ExitCode)
+		exitReason = fmt.Sprintf("%s exited (code=%d) without calling task_complete", r.Harness, r.ExitCode)
+		slog.Warn("runner: agent exited without task_complete", "harness", r.Harness, "exit_code", r.ExitCode)
 	}
 
 	// Tell the server which terminal state we ended in. For complete,
@@ -235,6 +227,185 @@ func runTaskRunner(serverURL string, runnerID int64) {
 		os.Exit(1)
 	}
 	_ = exitCode
+}
+
+type runnerAgentProcess interface {
+	Wait() (runnerAgentResult, error)
+}
+
+type runnerAgentResult struct {
+	Harness  string
+	ExitCode int
+}
+
+type claudeRunnerAgent struct {
+	proc *agent.Process
+}
+
+func (c *claudeRunnerAgent) Wait() (runnerAgentResult, error) {
+	r, err := c.proc.Wait()
+	return runnerAgentResult{Harness: "claude", ExitCode: r.ExitCode}, err
+}
+
+type codexRunnerAgent struct {
+	cmd      *exec.Cmd
+	ptmx     *os.File
+	logFile  *os.File
+	done     chan codexRunnerDone
+	copyDone chan struct{}
+}
+
+type codexRunnerDone struct {
+	exitCode int
+	err      error
+}
+
+func (c *codexRunnerAgent) Wait() (runnerAgentResult, error) {
+	res := <-c.done
+	if c.ptmx != nil {
+		_ = c.ptmx.Close()
+	}
+	if c.copyDone != nil {
+		select {
+		case <-c.copyDone:
+		case <-time.After(1 * time.Second):
+		}
+	}
+	if c.logFile != nil {
+		_ = c.logFile.Close()
+	}
+	return runnerAgentResult{Harness: "codex", ExitCode: res.exitCode}, res.err
+}
+
+func startRunnerAgent(ctx context.Context, cfg protocol.RunnerConfig, mcpPort int, persona, initialPrompt string, events chan<- agent.StreamEvent) (runnerAgentProcess, error) {
+	harnessName := cfg.Harness
+	if harnessName == "" {
+		harnessName = "claude"
+	}
+	switch harnessName {
+	case "claude":
+		proc, err := agent.Start(ctx, agent.Config{
+			MCPPort:         mcpPort,
+			ProjectPath:     cfg.Runner.WorktreePath,
+			Persona:         persona,
+			Nickname:        cfg.Runner.Nickname,
+			Channels:        nil,
+			Returning:       false,
+			SkipChatPrelude: true,
+			Model:           cfg.Model,
+			InitialPrompt:   initialPrompt,
+		}, events)
+		if err != nil {
+			return nil, err
+		}
+		return &claudeRunnerAgent{proc: proc}, nil
+	case "codex":
+		return startCodexRunnerAgent(ctx, cfg, mcpPort, persona, initialPrompt)
+	default:
+		return nil, fmt.Errorf("unsupported task runner harness %q (supported: claude, codex)", harnessName)
+	}
+}
+
+func startCodexRunnerAgent(ctx context.Context, cfg protocol.RunnerConfig, mcpPort int, persona, initialPrompt string) (runnerAgentProcess, error) {
+	if _, err := exec.LookPath("codex"); err != nil {
+		return nil, fmt.Errorf("codex binary not found in PATH: %w", err)
+	}
+	trustCodexRunnerProject(cfg.Runner.WorktreePath)
+
+	mcpURL := fmt.Sprintf("http://localhost:%d/mcp", mcpPort)
+	args := []string{
+		initialPrompt,
+		"--dangerously-bypass-approvals-and-sandbox",
+		"-C", cfg.Runner.WorktreePath,
+		"-c", fmt.Sprintf("instructions=%q", persona),
+		"-c", fmt.Sprintf("mcp_servers.artificial.url=%q", mcpURL),
+	}
+	model := cfg.Model
+	if model == "" {
+		model = "gpt-5.4"
+	}
+	args = append(args, "-m", model)
+
+	logDir := runnerAgentLogsDir()
+	_ = os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, fmt.Sprintf("%s-%s.tty", cfg.Runner.Nickname, time.Now().Format("20060102-150405")))
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		slog.Warn("runner codex: could not create tty log", "path", logPath, "err", err)
+		logFile = nil
+	}
+
+	cmd := exec.CommandContext(ctx, "codex", args...)
+	cmd.Dir = cfg.Runner.WorktreePath
+	cmd.Env = os.Environ()
+
+	slog.Info("starting runner codex", "model", model, "dir", cfg.Runner.WorktreePath, "args_count", len(args))
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
+	if err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		return nil, fmt.Errorf("start codex pty: %w", err)
+	}
+
+	p := &codexRunnerAgent{
+		cmd:      cmd,
+		ptmx:     ptmx,
+		logFile:  logFile,
+		done:     make(chan codexRunnerDone, 1),
+		copyDone: make(chan struct{}),
+	}
+
+	go func() {
+		defer close(p.copyDone)
+		var w io.Writer = os.Stdout
+		if logFile != nil {
+			w = io.MultiWriter(os.Stdout, logFile)
+		}
+		_, _ = io.Copy(w, ptmx)
+	}()
+
+	go func() {
+		err := cmd.Wait()
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = -1
+			}
+		}
+		p.done <- codexRunnerDone{exitCode: exitCode, err: err}
+	}()
+
+	return p, nil
+}
+
+func runnerAgentLogsDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "artificial", "logs")
+}
+
+func trustCodexRunnerProject(projectPath string) {
+	home, _ := os.UserHomeDir()
+	configDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		slog.Warn("runner codex: could not create config dir", "err", err)
+		return
+	}
+	configPath := filepath.Join(configDir, "config.toml")
+	data, _ := os.ReadFile(configPath)
+	key := fmt.Sprintf(`[projects."%s"]`, projectPath)
+	if strings.Contains(string(data), key) {
+		return
+	}
+	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		slog.Warn("runner codex: could not write config", "err", err)
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "\n%s\ntrust_level = \"trusted\"\n", key)
 }
 
 // handleRunnerHubMessage is the runner's WS handler. It is much
@@ -396,4 +567,3 @@ func buildRunnerMCPInstructions(cfg protocol.RunnerConfig) string {
 		cfg.Runner.ID, cfg.Task.ID,
 	)
 }
-
