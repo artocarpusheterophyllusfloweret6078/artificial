@@ -294,6 +294,13 @@ type projectCreateInput struct {
 	GitRemote string `json:"git_remote,omitempty" jsonschema:"Git remote URL (optional)"`
 }
 
+type projectAssignEmployeesInput struct {
+	ProjectID         flexID   `json:"project_id,omitempty" jsonschema:"Project ID. Provide project_id or project_name."`
+	ProjectName       string   `json:"project_name,omitempty" jsonschema:"Exact project name. Provide project_id or project_name."`
+	EmployeeIDs       []flexID `json:"employee_ids,omitempty" jsonschema:"Employee IDs to assign."`
+	EmployeeNicknames []string `json:"employee_nicknames,omitempty" jsonschema:"Employee nicknames to assign."`
+}
+
 type recruitWorkerInput struct {
 	Description string `json:"description" jsonschema:"One-line description: role, technologies, traits. e.g. 'React frontend dev, detail-oriented, good at CSS'"`
 }
@@ -387,6 +394,58 @@ func renderTaskDescription(in taskCreateInput) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func projectAssignmentRequest(in projectAssignEmployeesInput) protocol.ProjectAssignmentRequest {
+	employeeIDs := make([]int64, 0, len(in.EmployeeIDs))
+	for _, id := range in.EmployeeIDs {
+		employeeIDs = append(employeeIDs, int64(id))
+	}
+	return protocol.ProjectAssignmentRequest{
+		ProjectID:         int64(in.ProjectID),
+		ProjectName:       strings.TrimSpace(in.ProjectName),
+		EmployeeIDs:       employeeIDs,
+		EmployeeNicknames: in.EmployeeNicknames,
+	}
+}
+
+func formatProjectAssignmentResponse(result protocol.ProjectAssignmentResponse) string {
+	project := "project"
+	if result.Project != nil {
+		project = fmt.Sprintf("project #%d %q", result.Project.ID, result.Project.Name)
+	}
+	message := result.Message
+	if message == "" {
+		message = fmt.Sprintf("Assigned %d, failed %d employee(s) to %s", result.SuccessCount, result.FailureCount, project)
+	}
+	if len(result.Results) == 0 {
+		return message
+	}
+
+	var lines string
+	for _, r := range result.Results {
+		label := r.Identifier
+		if r.Nickname != "" {
+			label = r.Nickname
+			if r.EmployeeID > 0 {
+				label += fmt.Sprintf(" (#%d)", r.EmployeeID)
+			}
+		}
+		if r.OK {
+			detail := r.Status
+			if r.Message != "" {
+				detail = r.Message
+			}
+			lines += fmt.Sprintf("- %s: %s\n", label, detail)
+			continue
+		}
+		detail := r.Error
+		if detail == "" {
+			detail = r.Status
+		}
+		lines += fmt.Sprintf("- %s: failed: %s\n", label, detail)
+	}
+	return fmt.Sprintf("%s\n%s", message, strings.TrimRight(lines, "\n"))
 }
 
 type taskUpdateInput struct {
@@ -857,6 +916,34 @@ func (s *Server) registerTools() {
 				msg = fmt.Sprintf("spawned worker for %s (PID %d)", result.Employee, result.PID)
 			}
 			return textResult(msg), nil, nil
+		})
+
+		gomcp.AddTool(s.mcpServer, &gomcp.Tool{
+			Name:        "project_assign_employees",
+			Description: "Assign one or more worker employees to a project by project ID/name and employee ID/nickname.",
+		}, func(ctx context.Context, req *gomcp.CallToolRequest, input projectAssignEmployeesInput) (*gomcp.CallToolResult, any, error) {
+			if input.ProjectID == 0 && strings.TrimSpace(input.ProjectName) == "" {
+				return nil, nil, fmt.Errorf("project_id or project_name required")
+			}
+			if len(input.EmployeeIDs) == 0 && len(input.EmployeeNicknames) == 0 {
+				return nil, nil, fmt.Errorf("employee_ids or employee_nicknames required")
+			}
+			data, _ := json.Marshal(projectAssignmentRequest(input))
+			resp, err := s.hubClient.Request(ctx, protocol.WSMessage{
+				Type: protocol.MsgProjectAssignEmployees,
+				Data: data,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			var result protocol.ProjectAssignmentResponse
+			if err := json.Unmarshal(resp.Data, &result); err != nil {
+				return nil, nil, fmt.Errorf("decode project assignment: %w", err)
+			}
+			if result.Error != "" {
+				return nil, nil, fmt.Errorf("%s", result.Error)
+			}
+			return textResult(formatProjectAssignmentResponse(result)), nil, nil
 		})
 	}
 

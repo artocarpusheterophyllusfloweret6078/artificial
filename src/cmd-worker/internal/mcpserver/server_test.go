@@ -1,8 +1,11 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestRenderTaskDescription_FreeformOnly(t *testing.T) {
@@ -86,4 +89,49 @@ func TestRenderTaskDescription_AcceptanceOnly(t *testing.T) {
 	if strings.Contains(got, "## Goal") || strings.Contains(got, "## Context") || strings.Contains(got, "## Constraints") || strings.Contains(got, "## Notes") {
 		t.Errorf("unexpected empty-section heading rendered:\n%s", got)
 	}
+}
+
+func TestProjectAssignmentToolExposureIsCEOOnly(t *testing.T) {
+	ceoTools := registeredToolNames(t, "ceo")
+	if !ceoTools["project_assign_employees"] {
+		t.Fatal("CEO tools did not include project_assign_employees")
+	}
+
+	workerTools := registeredToolNames(t, "worker")
+	if workerTools["project_assign_employees"] {
+		t.Fatal("worker tools unexpectedly included project_assign_employees")
+	}
+}
+
+func registeredToolNames(t *testing.T, role string) map[string]bool {
+	t.Helper()
+	ctx := context.Background()
+	s := New("test-"+role, role, 0, nil, "")
+	clientTransport, serverTransport := gomcp.NewInMemoryTransports()
+	serverSession, err := s.mcpServer.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("connect server: %v", err)
+	}
+	client := gomcp.NewClient(&gomcp.Implementation{Name: "test-client"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect client: %v", err)
+	}
+
+	result, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	if err := clientSession.Close(); err != nil {
+		t.Fatalf("close client session: %v", err)
+	}
+	if err := serverSession.Wait(); err != nil {
+		t.Fatalf("server session wait: %v", err)
+	}
+
+	names := make(map[string]bool, len(result.Tools))
+	for _, tool := range result.Tools {
+		names[tool.Name] = true
+	}
+	return names
 }

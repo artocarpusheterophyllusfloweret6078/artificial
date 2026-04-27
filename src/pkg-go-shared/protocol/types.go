@@ -51,6 +51,39 @@ type Project struct {
 	AssignedAgentCount int    `json:"assigned_agent_count"`
 }
 
+// ProjectAssignmentRequest assigns existing employees to an existing project.
+// Project may be identified by ID or exact name; employees may be identified by
+// ID and/or nickname.
+type ProjectAssignmentRequest struct {
+	ProjectID         int64    `json:"project_id,omitempty"`
+	ProjectName       string   `json:"project_name,omitempty"`
+	EmployeeIDs       []int64  `json:"employee_ids,omitempty"`
+	EmployeeNicknames []string `json:"employee_nicknames,omitempty"`
+}
+
+// ProjectAssignmentEmployeeResult is the per-employee outcome for a project
+// assignment request.
+type ProjectAssignmentEmployeeResult struct {
+	Identifier string `json:"identifier"`
+	EmployeeID int64  `json:"employee_id,omitempty"`
+	Nickname   string `json:"nickname,omitempty"`
+	OK         bool   `json:"ok"`
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ProjectAssignmentResponse summarizes a project assignment request.
+type ProjectAssignmentResponse struct {
+	Project      *Project                          `json:"project,omitempty"`
+	Results      []ProjectAssignmentEmployeeResult `json:"results,omitempty"`
+	Assigned     []Employee                        `json:"assigned,omitempty"`
+	SuccessCount int                               `json:"success_count"`
+	FailureCount int                               `json:"failure_count"`
+	Message      string                            `json:"message,omitempty"`
+	Error        string                            `json:"error,omitempty"`
+}
+
 // Task represents a unit of work within a project.
 type Task struct {
 	ID          int64  `json:"id"`

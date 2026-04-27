@@ -175,6 +175,8 @@ func (h *Hub) handleMessage(ctx context.Context, c *client, msg protocol.WSMessa
 		h.handleProjectList(c, msg)
 	case protocol.MsgProjectCreate:
 		h.handleProjectCreate(c, msg)
+	case protocol.MsgProjectAssignEmployees:
+		h.handleProjectAssignEmployees(c, msg)
 	case protocol.MsgRecruit:
 		h.handleRecruit(c, msg)
 	case protocol.MsgRecruitAccept:
@@ -821,6 +823,185 @@ func (h *Hub) handleProjectCreate(c *client, msg protocol.WSMessage) {
 		Type: protocol.MsgProjectCreated,
 		Data: data,
 	}, "")
+}
+
+func (h *Hub) handleProjectAssignEmployees(c *client, msg protocol.WSMessage) {
+	var input protocol.ProjectAssignmentRequest
+	if msg.Data != nil {
+		json.Unmarshal(msg.Data, &input)
+	}
+	result := h.assignEmployeesToProject(c.nick, input)
+	data, _ := json.Marshal(result)
+	h.sendTo(c.nick, protocol.WSMessage{
+		Type:      msg.Type,
+		RequestID: msg.RequestID,
+		Data:      data,
+	})
+}
+
+func (h *Hub) assignEmployeesToProject(callerNick string, input protocol.ProjectAssignmentRequest) protocol.ProjectAssignmentResponse {
+	if caller, err := h.db.GetEmployeeByNick(callerNick); err != nil || caller.Role != "ceo" {
+		return protocol.ProjectAssignmentResponse{Error: "project_assign_employees is restricted to CEO role"}
+	}
+
+	project, errMsg := h.resolveProjectAssignmentTarget(input.ProjectID, input.ProjectName)
+	if errMsg != "" {
+		return protocol.ProjectAssignmentResponse{Error: errMsg}
+	}
+	current, err := h.db.ListProjectEmployees(project.ID)
+	if err != nil {
+		return protocol.ProjectAssignmentResponse{Error: err.Error()}
+	}
+	alreadyAssigned := make(map[int64]bool, len(current))
+	for _, emp := range current {
+		alreadyAssigned[emp.ID] = true
+	}
+
+	var results []protocol.ProjectAssignmentEmployeeResult
+	var assignIDs []int64
+	var pendingIndexes []int
+	seen := make(map[int64]bool)
+	successCount := 0
+	failureCount := 0
+
+	addFailure := func(identifier, errMsg string) {
+		results = append(results, protocol.ProjectAssignmentEmployeeResult{
+			Identifier: identifier,
+			OK:         false,
+			Status:     "failed",
+			Error:      errMsg,
+		})
+		failureCount++
+	}
+	addEmployee := func(identifier string, emp protocol.Employee) {
+		result := protocol.ProjectAssignmentEmployeeResult{
+			Identifier: identifier,
+			EmployeeID: emp.ID,
+			Nickname:   emp.Nickname,
+		}
+		if emp.Role != "worker" {
+			result.OK = false
+			result.Status = "failed"
+			result.Error = fmt.Sprintf("%s is not a worker agent", emp.Nickname)
+			results = append(results, result)
+			failureCount++
+			return
+		}
+		if seen[emp.ID] {
+			result.OK = true
+			result.Status = "duplicate"
+			result.Message = "duplicate input; assignment already handled"
+			results = append(results, result)
+			successCount++
+			return
+		}
+		seen[emp.ID] = true
+		if alreadyAssigned[emp.ID] {
+			result.OK = true
+			result.Status = "already_assigned"
+			result.Message = "already assigned"
+			results = append(results, result)
+			successCount++
+			return
+		}
+		result.Status = "assigned"
+		results = append(results, result)
+		assignIDs = append(assignIDs, emp.ID)
+		pendingIndexes = append(pendingIndexes, len(results)-1)
+	}
+
+	for _, id := range input.EmployeeIDs {
+		identifier := fmt.Sprintf("#%d", id)
+		if id <= 0 {
+			addFailure(identifier, "invalid employee_id")
+			continue
+		}
+		emp, err := h.db.GetEmployee(id)
+		if err != nil {
+			addFailure(identifier, fmt.Sprintf("employee %d not found", id))
+			continue
+		}
+		addEmployee(identifier, emp)
+	}
+	for _, nickname := range input.EmployeeNicknames {
+		identifier := strings.TrimSpace(nickname)
+		if identifier == "" {
+			addFailure("<empty>", "employee nickname required")
+			continue
+		}
+		emp, err := h.db.GetEmployeeByNick(identifier)
+		if err != nil {
+			addFailure(identifier, fmt.Sprintf("employee %q not found", identifier))
+			continue
+		}
+		addEmployee(identifier, emp)
+	}
+
+	if len(input.EmployeeIDs) == 0 && len(input.EmployeeNicknames) == 0 {
+		return protocol.ProjectAssignmentResponse{Project: &project, Error: "employee_ids or employee_nicknames required"}
+	}
+
+	if len(assignIDs) > 0 {
+		if err := h.db.AssignEmployeesToProject(project.ID, assignIDs); err != nil {
+			for _, idx := range pendingIndexes {
+				results[idx].OK = false
+				results[idx].Status = "failed"
+				results[idx].Error = err.Error()
+				failureCount++
+			}
+		} else {
+			for _, idx := range pendingIndexes {
+				results[idx].OK = true
+				results[idx].Message = "assigned"
+				successCount++
+			}
+		}
+	}
+
+	assigned, err := h.db.ListProjectEmployees(project.ID)
+	if err != nil {
+		return protocol.ProjectAssignmentResponse{Project: &project, Results: results, SuccessCount: successCount, FailureCount: failureCount, Error: err.Error()}
+	}
+	project.AssignedAgentCount = len(assigned)
+	return protocol.ProjectAssignmentResponse{
+		Project:      &project,
+		Results:      results,
+		Assigned:     assigned,
+		SuccessCount: successCount,
+		FailureCount: failureCount,
+		Message:      fmt.Sprintf("Processed %d employee reference(s): %d succeeded, %d failed for project #%d %q", len(results), successCount, failureCount, project.ID, project.Name),
+	}
+}
+
+func (h *Hub) resolveProjectAssignmentTarget(projectID int64, projectName string) (protocol.Project, string) {
+	projectName = strings.TrimSpace(projectName)
+	if projectID < 0 {
+		return protocol.Project{}, "invalid project_id"
+	}
+	if projectID == 0 && projectName == "" {
+		return protocol.Project{}, "project_id or project_name required"
+	}
+
+	var byID protocol.Project
+	if projectID > 0 {
+		project, err := h.db.GetProject(projectID)
+		if err != nil {
+			return protocol.Project{}, fmt.Sprintf("project %d not found", projectID)
+		}
+		byID = project
+	}
+	if projectName == "" {
+		return byID, ""
+	}
+
+	byName, err := h.db.GetProjectByName(projectName)
+	if err != nil {
+		return protocol.Project{}, fmt.Sprintf("project %q not found", projectName)
+	}
+	if projectID > 0 && byID.ID != byName.ID {
+		return protocol.Project{}, fmt.Sprintf("project_id %d is %q, not %q", projectID, byID.Name, projectName)
+	}
+	return byName, ""
 }
 
 // ── Recruitment ─────────────────────────────────────────────────────────

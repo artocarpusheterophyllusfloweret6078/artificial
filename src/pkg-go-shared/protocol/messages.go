@@ -50,8 +50,9 @@ const (
 
 // WebSocket message types (client → server, projects).
 const (
-	MsgProjectList   = "project_list"
-	MsgProjectCreate = "project_create"
+	MsgProjectList            = "project_list"
+	MsgProjectCreate          = "project_create"
+	MsgProjectAssignEmployees = "project_assign_employees"
 )
 
 // WebSocket message types (client → server, recruitment).
