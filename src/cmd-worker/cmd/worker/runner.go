@@ -645,7 +645,7 @@ func buildRunnerInitialPrompt(cfg protocol.RunnerConfig, assignmentBrief string)
 // initialize. Short — the persona above already covers the workflow.
 func buildRunnerMCPInstructions(cfg protocol.RunnerConfig) string {
 	return fmt.Sprintf(
-		"Runner MCP. Tools: task_describe, task_checkpoint, task_blocked, task_complete. Runner #%d, task #%d.",
+		"Runner MCP. Tools: task_describe for optional assignment reread/recovery, task_checkpoint, task_blocked, task_complete. Runner #%d, task #%d.",
 		cfg.Runner.ID, cfg.Task.ID,
 	)
 }

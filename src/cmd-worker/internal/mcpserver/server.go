@@ -936,7 +936,7 @@ func (s *Server) registerTools() {
 		Description: "Create a new task in the current project. " +
 			"Tasks may be picked up by a runner (autonomous, ephemeral Claude in an isolated worktree) — write the spec accordingly. " +
 			"Prefer the structured fields (goal, context, acceptance_criteria, constraints, files) over raw description: " +
-			"the runner reads task_describe with no other context and must be able to execute and self-verify from this alone. " +
+			"the runner receives the task details in its initial prompt and must be able to execute and self-verify from this alone. " +
 			"At minimum, every task should have acceptance_criteria — concrete pass/fail bullets the runner checks before calling task_complete.",
 	}, func(ctx context.Context, req *gomcp.CallToolRequest, input taskCreateInput) (*gomcp.CallToolResult, any, error) {
 		if input.Title == "" {
