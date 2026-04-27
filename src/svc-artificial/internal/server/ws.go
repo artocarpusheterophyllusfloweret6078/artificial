@@ -316,8 +316,8 @@ func (h *Hub) handleRunnerBlocked(c *client, msg protocol.WSMessage) {
 }
 
 // handleRunnerComplete is the success-path terminal transition. Marks
-// the runner complete, moves the task to in_qa (manager review
-// pending), and tells the parent worker the branch is ready.
+// the runner complete, moves the task to in_qa for manager inspection,
+// and tells the parent worker the branch is ready.
 func (h *Hub) handleRunnerComplete(c *client, msg protocol.WSMessage) {
 	runnerID := msg.ID
 	if runnerID == 0 {
@@ -343,7 +343,18 @@ func (h *Hub) handleRunnerComplete(c *client, msg protocol.WSMessage) {
 	// review. Commander can move it to done once they've inspected
 	// the runner's branch.
 	inQA := "in_qa"
-	h.db.UpdateTask(tr.TaskID, &inQA, nil, nil)
+	task, err := h.db.UpdateTask(tr.TaskID, &inQA, nil, nil)
+	if err != nil {
+		slog.Warn("runner complete task update failed", "err", err, "runner_id", tr.ID, "task_id", tr.TaskID)
+	} else {
+		task.Description = ""
+		data, _ := json.Marshal(task)
+		h.broadcastToTaskSubscribers(tr.TaskID, protocol.WSMessage{
+			Type: protocol.MsgTaskUpdated,
+			Data: data,
+			Text: "status=in_qa",
+		}, "")
+	}
 
 	if tr.ParentNick != "" && tr.ParentNick != "commander" {
 		h.sendTo(tr.ParentNick, protocol.WSMessage{
@@ -351,30 +362,6 @@ func (h *Hub) handleRunnerComplete(c *client, msg protocol.WSMessage) {
 			From: tr.Nickname,
 			Text: fmt.Sprintf("[runner #%d COMPLETE] branch %s — %s", tr.ID, p.BranchName, summary),
 		})
-	}
-
-	// Mirror task_complete into the reviews tab so the manager has a
-	// review row to act on (merge / request changes / mark reviewed).
-	// Body is JSON: branch + commits + worktree path are the artifacts
-	// the manager needs to inspect the runner's work.
-	body, _ := json.Marshal(map[string]any{
-		"runner_id":     tr.ID,
-		"task_id":       tr.TaskID,
-		"summary":       summary,
-		"branch_name":   p.BranchName,
-		"commits":       p.Commits,
-		"worktree_path": tr.WorktreePath,
-	})
-	if _, err := h.db.CreateReview(
-		tr.Nickname,
-		fmt.Sprintf("Runner finished task #%d", tr.TaskID),
-		summary,
-		"runner_complete",
-		string(body),
-	); err != nil {
-		slog.Warn("create runner_complete review failed", "err", err, "runner_id", tr.ID)
-	} else {
-		h.broadcast(protocol.WSMessage{Type: protocol.MsgReviewCreated}, "")
 	}
 
 	data, _ := json.Marshal(tr)
