@@ -501,23 +501,11 @@ func (s *Server) apiSpawnWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the worker binary
+	// Find the worker binary (sibling first, then PATH; supports both
+	// `cmd-worker` and `worker` names — see findWorkerBin).
 	workerBin := s.WorkerBin
 	if workerBin == "" {
-		// Try to find it next to the current binary
-		self, _ := os.Executable()
-		if self != "" {
-			candidate := self[:len(self)-len("svc-artificial")] + "cmd-worker"
-			if _, err := os.Stat(candidate); err == nil {
-				workerBin = candidate
-			}
-		}
-	}
-	if workerBin == "" {
-		// Try PATH
-		if p, err := exec.LookPath("cmd-worker"); err == nil {
-			workerBin = p
-		}
+		workerBin = findWorkerBin()
 	}
 	if workerBin == "" {
 		writeErr(w, 500, "cmd-worker binary not found; set --worker-bin flag")
@@ -986,7 +974,7 @@ func (s *Server) apiRecruitAccept(w http.ResponseWriter, r *http.Request) {
 	if workerBin == "" {
 		self, _ := os.Executable()
 		if self != "" {
-			candidate := self[:len(self)-len("svc-artificial")] + "cmd-worker"
+			candidate := filepath.Join(filepath.Dir(self), "cmd-worker")
 			if _, err := os.Stat(candidate); err == nil {
 				workerBin = candidate
 			}

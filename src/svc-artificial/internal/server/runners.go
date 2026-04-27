@@ -97,6 +97,32 @@ func scheduleHarnessClear(s *Server, runnerID int64) {
 	})
 }
 
+// findWorkerBin locates the cmd-worker binary the runner spawn (and
+// the persistent-worker spawn in api.go) execs. Two name conventions
+// to handle: `make` produces `cmd-worker`, `go install
+// ./src/cmd-worker/cmd/worker/` produces `worker`. Sibling lookup
+// (next to this binary) is preferred so a `go install` of both
+// `artificial` and `worker` into ~/go/bin Just Works without flags.
+// Returns "" if neither name is found anywhere.
+func findWorkerBin() string {
+	candidates := []string{"cmd-worker", "worker"}
+	if self, err := os.Executable(); err == nil && self != "" {
+		dir := filepath.Dir(self)
+		for _, name := range candidates {
+			p := filepath.Join(dir, name)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+	for _, name := range candidates {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // apiListRunners returns runners across all tasks. With ?active=1 it
 // filters to non-terminal status (running/blocked) — that's what the
 // board uses to badge tasks. Without the flag, the route is currently
@@ -282,19 +308,10 @@ func (s *Server) forkRunnerProcess(tr protocol.TaskRunner, logPath string) (int,
 	if workerBin == "" {
 		// Same fallback chain as apiSpawnWorker: try sibling binary,
 		// then PATH. Keeps `make run-artificial` working without an
-		// explicit --worker-bin flag.
-		self, _ := os.Executable()
-		if self != "" {
-			candidate := self[:len(self)-len("svc-artificial")] + "cmd-worker"
-			if _, err := os.Stat(candidate); err == nil {
-				workerBin = candidate
-			}
-		}
-		if workerBin == "" {
-			if p, err := exec.LookPath("cmd-worker"); err == nil {
-				workerBin = p
-			}
-		}
+		// explicit --worker-bin flag. The `make` target produces
+		// `cmd-worker`; `go install ./src/cmd-worker/cmd/worker/`
+		// produces `worker` — try both names in either location.
+		workerBin = findWorkerBin()
 	}
 	if workerBin == "" {
 		return 0, errors.New("cmd-worker binary not found")
