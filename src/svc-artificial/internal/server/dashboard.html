@@ -645,6 +645,7 @@ async function loadTasks() {
   tasks = Array.isArray(data) ? data : [];
   await loadActiveRunners();
   renderBoard();
+  if (document.getElementById('projectsView')?.classList.contains('active')) renderProjects();
 }
 
 async function loadActiveRunners() {
@@ -1418,6 +1419,7 @@ function switchView(view) {
 
 let projects = [];
 let projectAgents = {};
+const projectTaskStatuses = ['backlog','todo','in_progress','in_qa'];
 
 function renderProjects() {
   const el = document.getElementById('projectsView');
@@ -1426,11 +1428,11 @@ function renderProjects() {
     return;
   }
   el.innerHTML = projects.map(p => {
-    const projTasks = (tasks || []).filter(t => t.project_id === p.id);
+    const projTasks = (tasks || []).filter(t => t.project_id === p.id && t.status !== 'done');
     const assigned = Array.isArray(projectAgents[p.id]) ? projectAgents[p.id] : [];
     const assignedCount = assigned.length || p.assigned_agent_count || 0;
     const byStatus = s => projTasks.filter(t => t.status === s);
-    const counts = ['backlog','todo','in_progress','in_qa','done'].map(s => {
+    const counts = projectTaskStatuses.map(s => {
       const c = byStatus(s).length;
       return c ? `<span style="color:var(--text3)">${s.replace('_',' ')}: ${c}</span>` : '';
     }).filter(Boolean).join(' · ');
