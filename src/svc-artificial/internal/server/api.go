@@ -1118,11 +1118,7 @@ func (s *Server) apiUpdateTask(w http.ResponseWriter, r *http.Request) {
 	// error which we log but don't surface — the task update itself
 	// succeeded, the runner spawn is best-effort.
 	if input.Status != nil && *input.Status == "in_progress" && prev.Status != "in_progress" {
-		go func(taskID int64, parent string) {
-			if _, err := s.spawnRunnerForTask(taskID, parent); err != nil {
-				slog.Info("auto-spawn runner skipped or failed", "task_id", taskID, "err", err)
-			}
-		}(id, task.Assignee)
+		s.autoSpawnRunnerForTask(id, task.Assignee)
 	}
 	writeJSON(w, task)
 }

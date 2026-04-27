@@ -28,12 +28,13 @@ type client struct {
 
 // Hub manages WebSocket connections and message routing.
 type Hub struct {
-	db          *db.DB
-	port        int
-	mu          sync.RWMutex
-	clients     map[string]*client // nick → client
-	pluginState *pluginStateStore  // aggregated plugin runtime state from worker reports
-	pluginHost  *pluginhost.Host   // host-scope plugins spawned in this process
+	db                     *db.DB
+	port                   int
+	mu                     sync.RWMutex
+	clients                map[string]*client // nick → client
+	pluginState            *pluginStateStore  // aggregated plugin runtime state from worker reports
+	pluginHost             *pluginhost.Host   // host-scope plugins spawned in this process
+	autoSpawnRunnerForTask func(taskID int64, parentNick string)
 }
 
 // NewHub creates a new WebSocket hub.
@@ -627,6 +628,7 @@ func (h *Hub) handleTaskUpdate(c *client, msg protocol.WSMessage) {
 			return
 		}
 	}
+	prev, _ := h.db.GetTask(input.ID)
 
 	// If assignee is changing, auto-subscribe the new assignee
 	if input.Assignee != nil && *input.Assignee != "" {
@@ -646,6 +648,9 @@ func (h *Hub) handleTaskUpdate(c *client, msg protocol.WSMessage) {
 			})
 		}
 		return
+	}
+	if h.autoSpawnRunnerForTask != nil && input.Status != nil && *input.Status == "in_progress" && prev.Status != "in_progress" {
+		h.autoSpawnRunnerForTask(input.ID, task.Assignee)
 	}
 
 	// Describe what actually changed, so subscribers don't need the full task.

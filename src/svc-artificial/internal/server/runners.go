@@ -191,9 +191,20 @@ func (s *Server) apiSpawnRunner(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, tr)
 }
 
+// autoSpawnRunnerForTask starts a runner in the background after a task
+// moves to in_progress. Runner creation is best-effort: task updates have
+// already succeeded, so spawn errors are logged for operator visibility.
+func (s *Server) autoSpawnRunnerForTask(taskID int64, parentNick string) {
+	go func() {
+		if _, err := s.spawnRunnerForTask(taskID, parentNick); err != nil {
+			slog.Info("auto-spawn runner skipped or failed", "task_id", taskID, "err", err)
+		}
+	}()
+}
+
 // spawnRunnerForTask is the shared spawn path used both by the manual
-// HTTP endpoint and by the auto-trigger that fires when a task's
-// status moves to in_progress (see apiUpdateTask). Returns the
+// HTTP endpoint and by auto-triggers that fire when a task's status
+// moves to in_progress. Returns the
 // freshly-created TaskRunner row, or an error before any side effects
 // have been committed (worktree, fork) so the caller can decide
 // whether to propagate or quietly retry.

@@ -26,11 +26,12 @@ type Server struct {
 func New(database *db.DB, port int, workerBin string) *Server {
 	s := &Server{
 		DB:        database,
-		Hub:       NewHub(database, port),
 		Mux:       http.NewServeMux(),
 		Port:      port,
 		WorkerBin: workerBin,
 	}
+	s.Hub = NewHub(database, port)
+	s.Hub.autoSpawnRunnerForTask = s.autoSpawnRunnerForTask
 	s.registerRoutes()
 	return s
 }
